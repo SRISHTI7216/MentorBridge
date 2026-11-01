@@ -15,6 +15,30 @@ export const Login: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Check if redirected to login with error parameters in hash or search
+  useEffect(() => {
+    const rawHash = window.location.hash.startsWith('#')
+      ? window.location.hash.substring(1)
+      : window.location.hash;
+    const hashParams = new URLSearchParams(rawHash);
+    const queryParams = new URLSearchParams(window.location.search);
+
+    const errorDesc =
+      hashParams.get('error_description') ||
+      queryParams.get('error_description') ||
+      hashParams.get('error_msg');
+    const errorCode = hashParams.get('error_code') || queryParams.get('error_code');
+
+    if (errorDesc || errorCode) {
+      const desc = errorDesc
+        ? decodeURIComponent(errorDesc.replace(/\+/g, ' '))
+        : errorCode === 'otp_expired'
+        ? 'Your invitation link has expired or has already been used. Please contact your coordinator for a fresh link.'
+        : 'Authentication link error occurred.';
+      setErrorMessage(desc);
+    }
+  }, []);
+
   // If already authenticated, redirect directly to user's assigned dashboard
   useEffect(() => {
     if (user && role) {
@@ -144,7 +168,7 @@ export const Login: React.FC = () => {
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-container-high border border-outline-variant text-secondary-deep w-fit text-xs">
               <span className="material-symbols-outlined text-[16px] text-primary">account_balance</span>
               <span className="font-semibold tracking-wide">
-                Department of Computer Science & Engineering • Academic Portal
+                Department of Computer Science & Engineering â€¢ Academic Portal
               </span>
             </div>
 
@@ -244,7 +268,7 @@ export const Login: React.FC = () => {
             <div className="w-full max-w-md bg-surface-container-lowest border border-outline-variant rounded-2xl p-6 sm:p-8 shadow-sm relative">
               <div className="mb-6 space-y-1">
                 <div className="flex items-center justify-between">
-                  <h2 className="font-display text-xl font-bold text-on-surface">Mentor–Mentee Platform</h2>
+                  <h2 className="font-display text-xl font-bold text-on-surface">Mentorâ€“Mentee Platform</h2>
                   <span className="px-2 py-0.5 rounded-full bg-surface-container-low border border-outline-variant text-[11px] font-semibold text-secondary">
                     Supabase Auth
                   </span>
@@ -409,9 +433,9 @@ export const Login: React.FC = () => {
         <div className="w-full py-6 px-6 max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4 text-xs">
           <div className="flex flex-col sm:flex-row items-center gap-2 text-center md:text-left">
             <span className="font-display font-semibold text-on-surface">{APP_CONFIG.name}</span>
-            <span className="hidden sm:inline text-outline-variant">•</span>
+            <span className="hidden sm:inline text-outline-variant">â€¢</span>
             <span className="text-on-surface-variant text-[11px]">
-              © {new Date().getFullYear()} {APP_CONFIG.department}. {APP_CONFIG.accreditation}.
+              Â© {new Date().getFullYear()} {APP_CONFIG.department}. {APP_CONFIG.accreditation}.
             </span>
           </div>
           <nav className="flex flex-wrap justify-center items-center gap-x-5 gap-y-2 text-[11px] text-on-surface-variant">

@@ -3,6 +3,10 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { isSupabaseAdminConfigured, supabaseAdmin } from './lib/supabaseAdmin.js';
 import adminRoutes from './routes/adminRoutes.js';
+import assessmentRoutes from './routes/assessmentRoutes.js';
+import analyticsRoutes from './routes/analyticsRoutes.js';
+import { aiFeedbackQueue } from './services/aiFeedbackQueue.js';
+import { weeklySchedulerService } from './services/weeklySchedulerService.js';
 
 dotenv.config();
 
@@ -14,6 +18,12 @@ app.use(express.json());
 
 // Administrative API Routes (Secured by Admin Bearer Auth)
 app.use('/api/admin', adminRoutes);
+
+// Weekly Assessment Engine API Routes (Secured by Role Auth)
+app.use('/api/assessments', assessmentRoutes);
+
+// Student & Mentor Analytics API Routes (Secured by Role Auth)
+app.use('/api/analytics', analyticsRoutes);
 
 // Backend Healthcheck
 app.get('/api/health', async (_req: Request, res: Response) => {
@@ -53,9 +63,27 @@ app.get('/api/version', (_req: Request, res: Response) => {
 
 // Start Server
 if (process.env.NODE_ENV !== 'test') {
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`[MentorBridge Server] API running on http://localhost:${PORT}`);
+    // Recover any abandoned jobs or expired leases upon server startup
+    aiFeedbackQueue.recoverAndProcess().catch((err) => {
+      console.error('[MentorBridge Server] Error recovering AI feedback queue:', err);
+    });
+    // Start automated weekly AI progress feedback scheduler
+    weeklySchedulerService.start();
   });
+
+  const gracefulShutdown = () => {
+    console.log('[MentorBridge Server] Initiating graceful shutdown...');
+    weeklySchedulerService.stop();
+    server.close(() => {
+      console.log('[MentorBridge Server] Closed remaining connections.');
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGTERM', gracefulShutdown);
+  process.on('SIGINT', gracefulShutdown);
 }
 
 export default app;

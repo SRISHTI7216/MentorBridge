@@ -21,6 +21,19 @@ const getReqToken = (req: AdminRequest): string => {
   return (req.headers.authorization || '').replace('Bearer ', '').trim();
 };
 
+const getInvitationRedirectUrl = (req: AdminRequest): string => {
+  let origin = (req.headers.origin as string) || '';
+  if (!origin && req.headers.referer) {
+    try {
+      origin = new URL(req.headers.referer as string).origin;
+    } catch {
+      origin = '';
+    }
+  }
+  const frontendBase = process.env.FRONTEND_URL || origin || 'http://localhost:5173';
+  return `${frontendBase.replace(/\/+$/, '')}/auth/callback`;
+};
+
 // Enforce admin authentication across all administrative routes
 router.use(requireAdminAuth);
 
@@ -296,6 +309,7 @@ router.post('/students', async (req: AdminRequest, res: Response): Promise<void>
     }
 
     // 4. Invite user via Supabase Auth Admin API
+    const redirectTo = getInvitationRedirectUrl(req);
     let emailSent = false;
     let inviteLink: string | undefined;
     let smtpNote: string | undefined;
@@ -304,6 +318,7 @@ router.post('/students', async (req: AdminRequest, res: Response): Promise<void>
     const { data: inviteData, error: inviteError } = await admin.auth.admin.inviteUserByEmail(
       cleanEmail,
       {
+        redirectTo,
         data: {
           name: name.trim(),
           role: 'student',
@@ -322,6 +337,7 @@ router.post('/students', async (req: AdminRequest, res: Response): Promise<void>
         type: 'invite',
         email: cleanEmail,
         options: {
+          redirectTo,
           data: {
             name: name.trim(),
             role: 'student',
@@ -626,7 +642,7 @@ router.post('/mentors', async (req: AdminRequest, res: Response): Promise<void> 
     department = 'Computer Science & Engineering',
     designation = 'Assistant Professor',
     officeLocation = 'Faculty Cabin',
-    officeHours = 'Mon–Thu 14:00–16:00',
+    officeHours = 'Monâ€“Thu 14:00â€“16:00',
     specializations = [],
   } = req.body;
 
@@ -674,6 +690,7 @@ router.post('/mentors', async (req: AdminRequest, res: Response): Promise<void> 
     }
 
     // 3. Invite user via Supabase Auth Admin
+    const redirectTo = getInvitationRedirectUrl(req);
     let emailSent = false;
     let inviteLink: string | undefined;
     let smtpNote: string | undefined;
@@ -681,6 +698,7 @@ router.post('/mentors', async (req: AdminRequest, res: Response): Promise<void> 
     const { data: inviteData, error: inviteError } = await admin.auth.admin.inviteUserByEmail(
       cleanEmail,
       {
+        redirectTo,
         data: {
           name: name.trim(),
           role: 'mentor',
@@ -697,6 +715,7 @@ router.post('/mentors', async (req: AdminRequest, res: Response): Promise<void> 
         type: 'invite',
         email: cleanEmail,
         options: {
+          redirectTo,
           data: {
             name: name.trim(),
             role: 'mentor',
@@ -909,8 +928,91 @@ router.patch('/users/:id/status', async (req: AdminRequest, res: Response): Prom
   }
 });
 
+// Re-generate or dispatch fresh invitation link for an existing student or mentor
+router.post('/users/:id/reinvite', async (req: AdminRequest, res: Response): Promise<void> => {
+  const admin = supabaseAdmin!;
+  const targetUserId = req.params.id;
+
+  try {
+    const { data: profile, error: profileErr } = await admin
+      .from('profiles')
+      .select('id, name, email, role, is_active')
+      .eq('id', targetUserId)
+      .single();
+
+    if (profileErr || !profile) {
+      res.status(404).json({ error: 'User profile not found.' });
+      return;
+    }
+
+    const redirectTo = getInvitationRedirectUrl(req);
+    let emailSent = false;
+    let inviteLink: string | undefined;
+    let smtpNote: string | undefined;
+
+    // Attempt official Supabase email invitation
+    const { data: inviteData, error: inviteError } = await admin.auth.admin.inviteUserByEmail(
+      profile.email,
+      {
+        redirectTo,
+        data: {
+          name: profile.name,
+          role: profile.role,
+        },
+      }
+    );
+
+    if (!inviteError && inviteData?.user) {
+      emailSent = true;
+    } else {
+      console.warn('[AdminReinviteUser] Direct invite error, generating invite/recovery link:', inviteError?.message);
+      let linkRes = await admin.auth.admin.generateLink({
+        type: 'invite',
+        email: profile.email,
+        options: {
+          redirectTo,
+          data: {
+            name: profile.name,
+            role: profile.role,
+          },
+        },
+      });
+
+      if (linkRes.error) {
+        linkRes = await admin.auth.admin.generateLink({
+          type: 'recovery',
+          email: profile.email,
+          options: {
+            redirectTo,
+          },
+        });
+      }
+
+      if (linkRes.error || !linkRes.data?.user) {
+        throw new Error(linkRes.error?.message || 'Failed to re-generate invitation link.');
+      }
+
+      inviteLink = linkRes.data.properties?.action_link;
+      smtpNote =
+        'Direct SMTP email sending is not configured on this Supabase project. A fresh invitation link was generated successfully and can be copied.';
+    }
+
+    res.json({
+      message: `Fresh invitation generated for ${profile.name} (${profile.email}).`,
+      invitation: {
+        emailSent,
+        inviteLink,
+        smtpNote,
+      },
+    });
+  } catch (err: unknown) {
+    console.error('[AdminReinviteUser] Failed to generate fresh invitation:', err);
+    res.status(500).json({ error: (err as Error).message || 'Failed to re-generate invitation.' });
+  }
+});
+
 // ============================================================================
-// 5. MENTOR–MENTEE ALLOCATION
+// 5. MENTORâ€“MENTEE ALLOCATION
 // ============================================================================
 router.get('/allocations', async (req: AdminRequest, res: Response): Promise<void> => {
   try {

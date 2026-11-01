@@ -82,6 +82,28 @@ export const AdminStudents: React.FC = () => {
     smtpNote?: string;
   } | null>(null);
   const [copySuccess, setCopySuccess] = useState<boolean>(false);
+  const [isReinviting, setIsReinviting] = useState<boolean>(false);
+
+  const handleReinvite = async (studentId: string) => {
+    setIsReinviting(true);
+    try {
+      const res = await apiClient.reinviteUser(studentId);
+      if (res.data?.invitation) {
+        setInvitationResult({
+          emailSent: res.data.invitation.emailSent ?? false,
+          inviteLink: res.data.invitation.inviteLink,
+          smtpNote: res.data.invitation.smtpNote,
+          message: res.data.message || 'Fresh invitation link generated successfully.',
+        });
+        setViewingStudent(null);
+        setIsCreateModalOpen(true);
+      }
+    } catch (err: any) {
+      alert(err?.message || 'Failed to generate invitation link.');
+    } finally {
+      setIsReinviting(false);
+    }
+  };
 
   // Load students & cohorts
   const loadData = async () => {
@@ -231,7 +253,7 @@ export const AdminStudents: React.FC = () => {
             <Badge variant="primary">{students.length} Total</Badge>
           </div>
           <p className="text-xs text-on-surface-variant mt-1">
-            Department of Computer Science & Engineering • Enrolled Students Directory & Provisioning
+            Department of Computer Science & Engineering â€¢ Enrolled Students Directory & Provisioning
           </p>
         </div>
 
@@ -424,7 +446,7 @@ export const AdminStudents: React.FC = () => {
 
                     {/* Branch / Sem / Div */}
                     <td className="py-3 px-4 text-slate-600">
-                      {student.branch} • Sem {student.semester || '-'} • Div {student.division || '-'}
+                      {student.branch} â€¢ Sem {student.semester || '-'} â€¢ Div {student.division || '-'}
                     </td>
 
                     {/* Cohort */}
@@ -938,7 +960,7 @@ export const AdminStudents: React.FC = () => {
               <div>
                 <span className="text-slate-400 block text-[10px] uppercase font-semibold">Class</span>
                 <span className="text-slate-800 font-medium">
-                  Semester {viewingStudent.semester} • Division {viewingStudent.division}
+                  Semester {viewingStudent.semester} â€¢ Division {viewingStudent.division}
                 </span>
               </div>
               <div>
@@ -995,7 +1017,17 @@ export const AdminStudents: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex justify-end pt-2">
+            <div className="flex justify-between items-center pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isReinviting}
+                onClick={() => handleReinvite(viewingStudent.id)}
+                className="flex items-center gap-1.5 text-xs text-primary border-primary/30 hover:bg-primary/5"
+              >
+                <span className="material-symbols-outlined text-[15px]">send</span>
+                {isReinviting ? 'Generating...' : 'Re-send / Copy Invite Link'}
+              </Button>
               <Button variant="outline" size="sm" onClick={() => setViewingStudent(null)}>
                 Close
               </Button>

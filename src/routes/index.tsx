@@ -13,6 +13,7 @@ import { AdminLayout } from '../components/layout/AdminLayout';
 // Auth Features
 import { Login } from '../features/auth/Login';
 import { ForgotPassword } from '../features/auth/ForgotPassword';
+import { AuthCallback } from '../features/auth/AuthCallback';
 
 // Mentor Features
 import { MentorDashboard } from '../features/mentor/Dashboard';
@@ -55,6 +56,8 @@ export const AppRoutes: React.FC = () => {
       {/* Public Auth Routes */}
       <Route path="/login" element={<Login />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/auth/callback" element={<AuthCallback />} />
+      <Route path="/set-password" element={<AuthCallback />} />
 
       {/* Protected Routes: Session Required */}
       <Route element={<ProtectedRoute />}>

@@ -70,6 +70,28 @@ export const AdminMentors: React.FC = () => {
     smtpNote?: string;
   } | null>(null);
   const [copySuccess, setCopySuccess] = useState<boolean>(false);
+  const [isReinviting, setIsReinviting] = useState<boolean>(false);
+
+  const handleReinvite = async (mentorId: string) => {
+    setIsReinviting(true);
+    try {
+      const res = await apiClient.reinviteUser(mentorId);
+      if (res.data?.invitation) {
+        setInvitationResult({
+          emailSent: res.data.invitation.emailSent ?? false,
+          inviteLink: res.data.invitation.inviteLink,
+          smtpNote: res.data.invitation.smtpNote,
+          message: res.data.message || 'Fresh invitation link generated successfully.',
+        });
+        setViewingMentor(null);
+        setIsCreateModalOpen(true);
+      }
+    } catch (err: any) {
+      alert(err?.message || 'Failed to generate invitation link.');
+    } finally {
+      setIsReinviting(false);
+    }
+  };
 
   // Load mentors
   const loadMentors = async () => {
@@ -232,7 +254,7 @@ export const AdminMentors: React.FC = () => {
             <Badge variant="primary">{mentors.length} Total</Badge>
           </div>
           <p className="text-xs text-on-surface-variant mt-1">
-            Institutional Faculty Advising Directory • Account Provisioning & Workload Oversight
+            Institutional Faculty Advising Directory â€¢ Account Provisioning & Workload Oversight
           </p>
         </div>
 
@@ -842,7 +864,7 @@ export const AdminMentors: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-slate-900">{viewingMentor.name}</h3>
-                  <p className="text-xs text-slate-500">{viewingMentor.designation} • {viewingMentor.department}</p>
+                  <p className="text-xs text-slate-500">{viewingMentor.designation} â€¢ {viewingMentor.department}</p>
                 </div>
               </div>
               <button
@@ -944,7 +966,17 @@ export const AdminMentors: React.FC = () => {
               )}
             </div>
 
-            <div className="flex justify-end pt-2">
+            <div className="flex justify-between items-center pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isReinviting}
+                onClick={() => handleReinvite(viewingMentor.id)}
+                className="flex items-center gap-1.5 text-xs text-primary border-primary/30 hover:bg-primary/5"
+              >
+                <span className="material-symbols-outlined text-[15px]">send</span>
+                {isReinviting ? 'Generating...' : 'Re-send / Copy Invite Link'}
+              </Button>
               <Button variant="outline" size="sm" onClick={() => setViewingMentor(null)}>
                 Close
               </Button>
