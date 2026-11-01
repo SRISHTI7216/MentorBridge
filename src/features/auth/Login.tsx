@@ -33,8 +33,8 @@ export const Login: React.FC = () => {
       const desc = errorDesc
         ? decodeURIComponent(errorDesc.replace(/\+/g, ' '))
         : errorCode === 'otp_expired'
-        ? 'Your invitation link has expired or has already been used. Please contact your coordinator for a fresh link.'
-        : 'Authentication link error occurred.';
+          ? 'Your invitation link has expired or has already been used. Please contact your coordinator for a fresh link.'
+          : 'Authentication link error occurred.';
       setErrorMessage(desc);
     }
   }, []);
@@ -203,7 +203,7 @@ export const Login: React.FC = () => {
                 <path d="M40 90H600" stroke="#E2E8F0" strokeDasharray="4 4" strokeWidth="2"></path>
                 <path d="M120 40V140M320 30V150M520 40V140" stroke="#E2E8F0" strokeDasharray="2 2" strokeWidth="1.5"></path>
                 <path d="M120 90 C 200 40, 240 140, 320 90 C 400 40, 440 140, 520 90" fill="none" stroke="#4F46E5" strokeLinecap="round" strokeWidth="3"></path>
-                
+
                 {/* Mentee Node */}
                 <g transform="translate(120, 90)">
                   <circle fill="#EEF2FF" r="28" stroke="#4F46E5" strokeWidth="2.5"></circle>
@@ -268,7 +268,7 @@ export const Login: React.FC = () => {
             <div className="w-full max-w-md bg-surface-container-lowest border border-outline-variant rounded-2xl p-6 sm:p-8 shadow-sm relative">
               <div className="mb-6 space-y-1">
                 <div className="flex items-center justify-between">
-                  <h2 className="font-display text-xl font-bold text-on-surface">Mentorâ€“Mentee Platform</h2>
+                  <h2 className="font-display text-xl font-bold text-on-surface">Mentor Mentee Platform</h2>
                   <span className="px-2 py-0.5 rounded-full bg-surface-container-low border border-outline-variant text-[11px] font-semibold text-secondary">
                     Supabase Auth
                   </span>
@@ -283,33 +283,30 @@ export const Login: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => handleRolePillClick('student')}
-                  className={`flex-1 text-center py-1.5 px-2 rounded-lg font-semibold flex items-center justify-center gap-1 transition-all ${
-                    selectedRolePill === 'student'
+                  className={`flex-1 text-center py-1.5 px-2 rounded-lg font-semibold flex items-center justify-center gap-1 transition-all ${selectedRolePill === 'student'
                       ? 'bg-surface-container-lowest text-on-surface shadow-xs text-primary'
                       : 'text-on-surface-variant hover:text-on-surface'
-                  }`}
+                    }`}
                 >
                   <span className="material-symbols-outlined text-[15px]">school</span> Student
                 </button>
                 <button
                   type="button"
                   onClick={() => handleRolePillClick('mentor')}
-                  className={`flex-1 text-center py-1.5 px-2 rounded-lg font-semibold flex items-center justify-center gap-1 transition-all ${
-                    selectedRolePill === 'mentor'
+                  className={`flex-1 text-center py-1.5 px-2 rounded-lg font-semibold flex items-center justify-center gap-1 transition-all ${selectedRolePill === 'mentor'
                       ? 'bg-surface-container-lowest text-on-surface shadow-xs text-primary'
                       : 'text-on-surface-variant hover:text-on-surface'
-                  }`}
+                    }`}
                 >
                   <span className="material-symbols-outlined text-[15px]">psychology</span> Faculty
                 </button>
                 <button
                   type="button"
                   onClick={() => handleRolePillClick('coordinator')}
-                  className={`flex-1 text-center py-1.5 px-2 rounded-lg font-semibold flex items-center justify-center gap-1 transition-all ${
-                    selectedRolePill === 'coordinator'
+                  className={`flex-1 text-center py-1.5 px-2 rounded-lg font-semibold flex items-center justify-center gap-1 transition-all ${selectedRolePill === 'coordinator'
                       ? 'bg-surface-container-lowest text-on-surface shadow-xs text-primary'
                       : 'text-on-surface-variant hover:text-on-surface'
-                  }`}
+                    }`}
                 >
                   <span className="material-symbols-outlined text-[15px]">admin_panel_settings</span> Coordinator
                 </button>
@@ -332,11 +329,10 @@ export const Login: React.FC = () => {
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="student.id@engg.edu or faculty@cs.univ.edu"
                       required
-                      className={`w-full pl-10 pr-3 py-2.5 bg-surface-container-lowest border rounded-lg text-sm transition-all outline-none ${
-                        errorMessage
+                      className={`w-full pl-10 pr-3 py-2.5 bg-surface-container-lowest border rounded-lg text-sm transition-all outline-none ${errorMessage
                           ? 'border-error ring-2 ring-error/20'
                           : 'border-outline-variant focus:border-primary focus:ring-2 focus:ring-primary/20'
-                      }`}
+                        }`}
                     />
                   </div>
                 </div>
