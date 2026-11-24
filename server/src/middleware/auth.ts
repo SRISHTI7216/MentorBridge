@@ -15,6 +15,9 @@ export interface AuthenticatedRequest extends Request {
 
 export interface AdminRequest extends AuthenticatedRequest {}
 
+export const isMentorOrAdminRole = (role: AuthenticatedUser['role'] | undefined): boolean =>
+  role === 'mentor' || role === 'admin';
+
 /**
  * Verifies bearer JWT token and attaches user profile to request
  */
@@ -108,7 +111,7 @@ export const requireMentorOrAdmin = async (
   next: NextFunction
 ): Promise<void> => {
   await requireAuth(req, res, () => {
-    if (!req.user || (req.user.role !== 'mentor' && req.user.role !== 'admin')) {
+    if (!req.user || !isMentorOrAdminRole(req.user.role)) {
       res.status(403).json({
         error: `Forbidden: Faculty Mentor privileges required. Current role: '${req.user?.role}'.`,
       });

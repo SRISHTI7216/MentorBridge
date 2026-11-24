@@ -13,7 +13,7 @@ export interface StoredQuestion {
   id: string;
   assessmentId: string;
   questionOrder: number;
-  questionType: 'mcq' | 'descriptive';
+  questionType: 'mcq' | 'multiple_select' | 'true_false' | 'descriptive';
   questionText: string;
   marks: number;
   evaluationGuidance?: string;
@@ -32,6 +32,7 @@ export interface StoredAssignment {
 export interface StoredAssessment {
   id: string;
   mentorId: string;
+  originModuleId?: string | null;
   academicTermId: string;
   title: string;
   description: string;
@@ -40,6 +41,7 @@ export interface StoredAssessment {
   durationMinutes: number;
   totalMarks: number;
   passingMarks: number;
+  passingPercentage?: number | null;
   startTime: string;
   endTime: string;
   allowedAttempts: number;
@@ -55,6 +57,7 @@ export interface StoredAnswer {
   attemptId: string;
   questionId: string;
   selectedOptionId?: string | null;
+  selectedOptionIds?: string[];
   descriptiveAnswer?: string | null;
   isCorrect?: boolean | null;
   marksObtained: number;
@@ -86,6 +89,7 @@ function mapAssessmentRow(row: any): StoredAssessment {
   return {
     id: row.id,
     mentorId: row.mentor_id,
+    originModuleId: row.origin_module_id || null,
     academicTermId: row.academic_term_id,
     title: row.title,
     description: row.description || '',
@@ -94,6 +98,7 @@ function mapAssessmentRow(row: any): StoredAssessment {
     durationMinutes: Number(row.duration_minutes),
     totalMarks: Number(row.total_marks || 0),
     passingMarks: Number(row.passing_marks || 0),
+    passingPercentage: row.passing_percentage == null ? null : Number(row.passing_percentage),
     startTime: row.start_time,
     endTime: row.end_time,
     allowedAttempts: Number(row.allowed_attempts || 1),
@@ -152,6 +157,7 @@ function mapAnswerRow(row: any): StoredAnswer {
     attemptId: row.attempt_id,
     questionId: row.question_id,
     selectedOptionId: row.selected_option_id || null,
+    selectedOptionIds: row.selected_option_ids || (row.selected_option_id ? [row.selected_option_id] : []),
     descriptiveAnswer: row.descriptive_answer || null,
     isCorrect: row.is_correct !== null ? Boolean(row.is_correct) : null,
     marksObtained: Number(row.marks_obtained || 0),
@@ -187,11 +193,13 @@ class AssessmentStore {
       duration_minutes: data.durationMinutes,
       total_marks: data.totalMarks,
       passing_marks: data.passingMarks || 0,
+      passing_percentage: data.passingPercentage ?? null,
       start_time: data.startTime,
       end_time: data.endTime,
       allowed_attempts: data.allowedAttempts || 1,
       status: data.status || 'draft',
       is_results_published: Boolean(data.isResultsPublished),
+      ...(data.originModuleId ? { origin_module_id: data.originModuleId } : {}),
     };
 
     const { data: created, error } = await db
@@ -240,7 +248,7 @@ class AssessmentStore {
     return data ? mapAssessmentRow(data) : null;
   }
 
-  async updateAssessment(id: string, updates: Partial<StoredAssessment>): Promise<StoredAssessment | null> {
+  async updateAssessment(id: string, updates: Partial<StoredAssessment>, expectedStatuses?: StoredAssessment['status'][], expectedResultsPublished?: boolean): Promise<StoredAssessment | null> {
     const db = this.getDb();
     const payload: any = { updated_at: new Date().toISOString() };
 
@@ -251,6 +259,7 @@ class AssessmentStore {
     if (updates.durationMinutes !== undefined) payload.duration_minutes = updates.durationMinutes;
     if (updates.totalMarks !== undefined) payload.total_marks = updates.totalMarks;
     if (updates.passingMarks !== undefined) payload.passing_marks = updates.passingMarks;
+    if (updates.passingPercentage !== undefined) payload.passing_percentage = updates.passingPercentage;
     if (updates.startTime !== undefined) payload.start_time = updates.startTime;
     if (updates.endTime !== undefined) payload.end_time = updates.endTime;
     if (updates.allowedAttempts !== undefined) payload.allowed_attempts = updates.allowedAttempts;
@@ -258,12 +267,10 @@ class AssessmentStore {
     if (updates.isResultsPublished !== undefined) payload.is_results_published = updates.isResultsPublished;
     if (updates.resultsPublishedAt !== undefined) payload.results_published_at = updates.resultsPublishedAt;
 
-    const { data, error } = await db
-      .from('assessments')
-      .update(payload)
-      .eq('id', id)
-      .select('*')
-      .single();
+    let query = db.from('assessments').update(payload).eq('id', id);
+    if (expectedStatuses) query = query.in('status', expectedStatuses);
+    if (expectedResultsPublished !== undefined) query = query.eq('is_results_published', expectedResultsPublished);
+    const { data, error } = await query.select('*').maybeSingle();
 
     if (error) {
       console.error('[AssessmentStore] Failed to update assessment in Supabase:', error.message);
@@ -302,28 +309,10 @@ class AssessmentStore {
   async getStudentAssessments(studentId: string): Promise<StoredAssessment[]> {
     const db = this.getDb();
 
-    // 1. Get explicitly assigned assessment IDs
-    const { data: assignments } = await db
-      .from('assessment_assignments')
-      .select('assessment_id')
-      .eq('student_id', studentId);
-
-    const assignedIds = new Set<string>((assignments || []).map((a) => a.assessment_id));
-
-    // 2. Also check if student's active mentor authored any published assessments
-    const { data: mentorAssgn } = await db
-      .from('mentor_assignments')
-      .select('mentor_id')
-      .eq('student_id', studentId)
-      .eq('is_active', true);
-
-    const mentorIds = (mentorAssgn || []).map((m) => m.mentor_id);
-
-    // 3. Fetch published/completed assessments
     const { data: allAssessments, error } = await db
       .from('assessments')
       .select('*')
-      .in('status', ['published', 'completed'])
+      .in('status', ['published', 'completed', 'archived'])
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -331,14 +320,67 @@ class AssessmentStore {
       throw new Error(`Database error fetching student assessments: ${error.message}`);
     }
 
-    // A student can take an assessment if explicitly assigned, or authored by their active mentor, or general cohort
-    const visibleAssessments = (allAssessments || []).filter((a) => {
-      if (assignedIds.has(a.id)) return true;
-      if (mentorIds.includes(a.mentor_id)) return true;
-      return false;
-    });
+    const eligibility = await Promise.all((allAssessments || []).map(async (a) => ({
+      assessment: a,
+      eligible: await this.canStudentAccessAssessment(a.id, studentId),
+    })));
+    const visibleAssessments = eligibility.filter((item) => item.eligible).map((item) => mapAssessmentRow(item.assessment));
+    const withHistory = await Promise.all(visibleAssessments.map(async (assessment) => assessment.status !== 'archived'
+      || (await this.getStudentAttempts(assessment.id, studentId)).length > 0));
+    return visibleAssessments.filter((_assessment, index) => withHistory[index]);
+  }
 
-    return visibleAssessments.map(mapAssessmentRow);
+  async canStudentAccessAssessment(assessmentId: string, studentId: string): Promise<boolean> {
+    const { data, error } = await this.getDb().rpc('assessment_student_is_eligible', { p_assessment_id: assessmentId, p_student_id: studentId });
+    if (error) throw new Error('Unable to verify assessment eligibility.');
+    if (data === true) return true;
+
+    // Direct assessment assignment fallback
+    const { data: directAssignment } = await this.getDb()
+      .from('assessment_assignments')
+      .select('id')
+      .eq('assessment_id', assessmentId)
+      .eq('student_id', studentId)
+      .maybeSingle();
+    if (directAssignment) return true;
+
+    // Active mentor mentee fallback
+    const assessment = await this.getAssessment(assessmentId);
+    if (assessment) {
+      const { data: mentorAssignment } = await this.getDb()
+        .from('mentor_assignments')
+        .select('id')
+        .eq('mentor_id', assessment.mentorId)
+        .eq('student_id', studentId)
+        .eq('is_active', true)
+        .maybeSingle();
+      if (mentorAssignment) return true;
+    }
+
+    if (assessment?.status !== 'archived') return false;
+    return (await this.getStudentAttempts(assessmentId, studentId)).length > 0;
+  }
+
+  async getStudentAssessmentQuestions(assessmentId: string, studentId: string): Promise<StoredQuestion[]> {
+    const assessment = await this.getAssessment(assessmentId);
+    if (assessment?.status === 'archived') {
+      const attempts = await this.getStudentAttempts(assessmentId, studentId);
+      if (!attempts.some((attempt) => attempt.status === 'in_progress')) return [];
+      // Archived assessments cannot start new work, but a student's existing attempt
+      // still needs its question text to resume and submit through Phase 5C.6.
+      return this.getAssessmentQuestions(assessmentId);
+    }
+    const { data, error } = await this.getDb().rpc('student_assessment_content_for_backend', {
+      p_assessment_id: assessmentId, p_student_id: studentId,
+    });
+    if (error) throw new Error('Unable to load assessment questions.');
+    const questions = new Map<string, any>();
+    for (const row of data || []) {
+      const question = questions.get(row.question_id) || { id: row.question_id, assessment_id: assessmentId, question_order: row.question_order, question_type: row.question_type, question_text: row.question_text, marks: row.marks };
+      if (row.option_id) question.options = [...(question.options || []), { id: row.option_id, question_id: row.question_id, option_order: row.option_order, option_text: row.option_text }];
+      questions.set(row.question_id, question);
+    }
+    return [...questions.values()].map((question) => mapQuestionRow(question, question.options || []));
   }
 
   // --- Questions & Options Operations ---
@@ -370,7 +412,7 @@ class AssessmentStore {
 
     // Insert Options if MCQ
     let createdOptions: any[] = [];
-    if (question.questionType === 'mcq' && question.options && question.options.length > 0) {
+    if (question.questionType !== 'descriptive' && question.options && question.options.length > 0) {
       const optionsToInsert = question.options.map((opt, idx) => ({
         id: crypto.randomUUID(),
         question_id: qId,
@@ -404,6 +446,7 @@ class AssessmentStore {
       .from('assessment_questions')
       .select('*')
       .eq('assessment_id', assessmentId)
+      .is('removed_at', null)
       .order('question_order', { ascending: true });
 
     if (qErr) {
@@ -440,10 +483,14 @@ class AssessmentStore {
 
     const qPayload: any = { updated_at: new Date().toISOString() };
     if (updates.questionOrder !== undefined) qPayload.question_order = updates.questionOrder;
+    if (updates.questionType !== undefined) qPayload.question_type = updates.questionType;
     if (updates.questionText !== undefined) qPayload.question_text = updates.questionText;
     if (updates.marks !== undefined) qPayload.marks = updates.marks;
     if (updates.evaluationGuidance !== undefined) qPayload.evaluation_guidance = updates.evaluationGuidance;
     if (updates.explanation !== undefined) qPayload.explanation = updates.explanation;
+    if ((updates as any).difficulty !== undefined) qPayload.generation_difficulty = (updates as any).difficulty;
+    if ((updates as any).cognitiveLevel !== undefined) qPayload.generation_cognitive_level = (updates as any).cognitiveLevel;
+    if ((updates as any).topic !== undefined) qPayload.generation_topic = (updates as any).topic;
 
     const { data: qData, error: qErr } = await db
       .from('assessment_questions')
@@ -458,9 +505,10 @@ class AssessmentStore {
     }
 
     let finalOptions: any[] = [];
-    if (updates.options && updates.options.length > 0) {
+    if (updates.options !== undefined) {
       // Replace options
-      await db.from('assessment_options').delete().eq('question_id', id);
+      const { error: deleteOptionsError } = await db.from('assessment_options').delete().eq('question_id', id);
+      if (deleteOptionsError) throw new Error(`Database error removing old options: ${deleteOptionsError.message}`);
 
       const toInsert = updates.options.map((opt, idx) => ({
         id: crypto.randomUUID(),
@@ -470,15 +518,19 @@ class AssessmentStore {
         is_correct: Boolean(opt.isCorrect),
       }));
 
-      const { data: newOpts, error: optErr } = await db
-        .from('assessment_options')
-        .insert(toInsert)
-        .select('*');
+      const { data: newOpts, error: optErr } = toInsert.length > 0
+        ? await db.from('assessment_options').insert(toInsert).select('*')
+        : { data: [], error: null };
 
       if (optErr) {
         throw new Error(`Database error replacing options: ${optErr.message}`);
       }
       finalOptions = newOpts || [];
+      // Options are stored in a child table. Advance the parent version after
+      // all child writes so regeneration workers detect an option-only edit.
+      const { error: touchQuestionError } = await db.from('assessment_questions')
+        .update({ updated_at: new Date().toISOString() }).eq('id', id);
+      if (touchQuestionError) throw new Error(`Database error updating question version: ${touchQuestionError.message}`);
     } else {
       const { data: existingOpts } = await db
         .from('assessment_options')
@@ -530,7 +582,8 @@ class AssessmentStore {
     const { data: questions } = await db
       .from('assessment_questions')
       .select('marks')
-      .eq('assessment_id', assessmentId);
+      .eq('assessment_id', assessmentId)
+      .is('removed_at', null);
 
     const sumMarks = (questions || []).reduce((acc, curr) => acc + Number(curr.marks), 0);
     await db
@@ -582,91 +635,23 @@ class AssessmentStore {
   }
 
   async isStudentAssigned(assessmentId: string, studentId: string): Promise<boolean> {
-    const db = this.getDb();
-    // 1. Direct assignment check
-    const { data: direct } = await db
-      .from('assessment_assignments')
-      .select('id')
-      .eq('assessment_id', assessmentId)
-      .eq('student_id', studentId)
-      .maybeSingle();
-
-    if (direct) return true;
-
-    // 2. Check if authored by student's active mentor
-    const { data: assessment } = await db
-      .from('assessments')
-      .select('mentor_id')
-      .eq('id', assessmentId)
-      .maybeSingle();
-
-    if (assessment?.mentor_id) {
-      const { data: mentorAssgn } = await db
-        .from('mentor_assignments')
-        .select('id')
-        .eq('mentor_id', assessment.mentor_id)
-        .eq('student_id', studentId)
-        .eq('is_active', true)
-        .maybeSingle();
-
-      if (mentorAssgn) return true;
-    }
-
-    return false;
+    return this.canStudentAccessAssessment(assessmentId, studentId);
   }
 
   // --- Attempts Operations ---
 
   async startAttempt(assessmentId: string, studentId: string): Promise<StoredAttempt> {
-    const db = this.getDb();
-
-    // 1. Check if active attempt already exists in progress
-    const { data: existingActive } = await db
-      .from('assessment_attempts')
-      .select('*')
-      .eq('assessment_id', assessmentId)
-      .eq('student_id', studentId)
-      .eq('status', 'in_progress')
-      .maybeSingle();
-
-    if (existingActive) {
-      return mapAttemptRow(existingActive);
+    const { data, error } = await this.getDb().rpc('start_assessment_attempt', {
+      p_assessment_id: assessmentId, p_student_id: studentId,
+    });
+    if (error || !data) {
+      const message = error?.message || '';
+      if (message.includes('Attempt limit reached')) throw new Error('Attempt limit reached.');
+      if (message.includes('outside its availability window')) throw new Error('Assessment is outside its availability window.');
+      if (message.includes('not available to this student')) throw new Error('Assessment is not available to this student.');
+      throw new Error('Unable to start assessment attempt.');
     }
-
-    // 2. Count existing attempts to determine next attempt number
-    const { data: pastAttempts } = await db
-      .from('assessment_attempts')
-      .select('id')
-      .eq('assessment_id', assessmentId)
-      .eq('student_id', studentId);
-
-    const attemptNumber = (pastAttempts?.length || 0) + 1;
-    const id = crypto.randomUUID();
-    const timestamp = new Date().toISOString();
-
-    const { data: created, error } = await db
-      .from('assessment_attempts')
-      .insert({
-        id,
-        assessment_id: assessmentId,
-        student_id: studentId,
-        attempt_number: attemptNumber,
-        status: 'in_progress',
-        started_at: timestamp,
-        mcq_score: 0,
-        descriptive_score: 0,
-        total_score: 0,
-        is_evaluated: false,
-      })
-      .select('*')
-      .single();
-
-    if (error) {
-      console.error('[AssessmentStore] Failed to insert attempt into Supabase:', error.message);
-      throw new Error(`Database error starting attempt: ${error.message}`);
-    }
-
-    return mapAttemptRow(created);
+    return mapAttemptRow(Array.isArray(data) ? data[0] : data);
   }
 
   async getAttempt(attemptId: string): Promise<StoredAttempt | null> {
@@ -707,55 +692,39 @@ class AssessmentStore {
     return (data || []).map(mapAttemptRow);
   }
 
+  async getAssessmentLifecycleAttempts(assessmentId: string): Promise<StoredAttempt[]> {
+    const { data, error } = await this.getDb().from('assessment_attempts').select('*')
+      .eq('assessment_id', assessmentId).order('attempt_number', { ascending: true });
+    if (error) throw new Error(`Database error fetching assessment attempts: ${error.message}`);
+    return (data || []).map(mapAttemptRow);
+  }
+
+  async getAssessmentSubmissionsPage(assessmentId: string, limit: number, offset: number): Promise<{ attempts: StoredAttempt[]; total: number }> {
+    const { data, error, count } = await this.getDb().from('assessment_attempts').select('*', { count: 'exact' })
+      .eq('assessment_id', assessmentId).neq('status', 'in_progress')
+      .order('submitted_at', { ascending: false }).range(offset, offset + limit - 1);
+    if (error) throw new Error('Unable to retrieve paginated submissions.');
+    return { attempts: (data || []).map(mapAttemptRow), total: count || 0 };
+  }
+
   // --- Answers Operations ---
 
   async saveAnswer(
     attemptId: string,
     questionId: string,
-    data: { selectedOptionId?: string; descriptiveAnswer?: string }
+    data: { selectedOptionId?: string; selectedOptionIds?: string[]; descriptiveAnswer?: string }
   ): Promise<StoredAnswer> {
-    const db = this.getDb();
-
-    // Verify attempt is active
-    const { data: attempt, error: attErr } = await db
-      .from('assessment_attempts')
-      .select('status')
-      .eq('id', attemptId)
-      .single();
-
-    if (attErr || !attempt) {
-      throw new Error('Attempt not found.');
+    const { data: saved, error } = await this.getDb().rpc('save_assessment_attempt_answer', {
+      p_attempt_id: attemptId, p_question_id: questionId,
+      p_selected_option_ids: data.selectedOptionIds ?? (data.selectedOptionId ? [data.selectedOptionId] : []),
+      p_descriptive_answer: data.descriptiveAnswer ?? null,
+    });
+    if (error || !saved) {
+      if (error?.message?.includes('Attempt has expired')) throw new Error('Attempt has expired.');
+      if (error?.message?.includes('Attempt is not writable')) throw new Error('Attempt is no longer active.');
+      throw new Error('Unable to save answer. Attempt may be expired or no longer active.');
     }
-    if (attempt.status !== 'in_progress') {
-      throw new Error('Cannot update answer: Attempt has already been submitted.');
-    }
-
-    const timestamp = new Date().toISOString();
-    const upsertPayload: any = {
-      attempt_id: attemptId,
-      question_id: questionId,
-      updated_at: timestamp,
-    };
-
-    if (data.selectedOptionId !== undefined) {
-      upsertPayload.selected_option_id = data.selectedOptionId || null;
-    }
-    if (data.descriptiveAnswer !== undefined) {
-      upsertPayload.descriptive_answer = data.descriptiveAnswer || null;
-    }
-
-    const { data: saved, error } = await db
-      .from('assessment_answers')
-      .upsert(upsertPayload, { onConflict: 'attempt_id,question_id' })
-      .select('*')
-      .single();
-
-    if (error) {
-      console.error('[AssessmentStore] Failed to save answer in Supabase:', error.message);
-      throw new Error(`Database error saving answer: ${error.message}`);
-    }
-
-    return mapAnswerRow(saved);
+    return mapAnswerRow(Array.isArray(saved) ? saved[0] : saved);
   }
 
   async getAttemptAnswers(attemptId: string): Promise<StoredAnswer[]> {
@@ -771,9 +740,10 @@ class AssessmentStore {
 
   // Submit and auto-evaluate MCQs
   async submitAttempt(attemptId: string): Promise<StoredAttempt | null> {
-    const db = this.getDb();
-
-    // 1. Verify attempt is in progress
+    const { data, error } = await this.getDb().rpc('submit_assessment_attempt', { p_attempt_id: attemptId });
+    if (error || !data) return null;
+    return mapAttemptRow(Array.isArray(data) ? data[0] : data);
+    /* Legacy multi-request grading removed: it allowed partial commits and races.
     const { data: attemptRow, error: attErr } = await db
       .from('assessment_attempts')
       .select('*')
@@ -849,7 +819,7 @@ class AssessmentStore {
       throw new Error(`Database error submitting attempt: ${upErr.message}`);
     }
 
-    return mapAttemptRow(updatedAttempt);
+    return mapAttemptRow(updatedAttempt); */
   }
 
   // Mentor evaluates descriptive questions
@@ -857,59 +827,15 @@ class AssessmentStore {
     attemptId: string,
     mentorId: string,
     evaluations: Array<{ questionId: string; marksObtained: number; mentorFeedback?: string }>,
-    generalFeedback?: string
+    generalFeedback?: string,
+    isAdmin = false,
   ): Promise<StoredAttempt | null> {
-    const db = this.getDb();
-    const timestamp = new Date().toISOString();
-
-    const { data: attemptRow, error: attErr } = await db
-      .from('assessment_attempts')
-      .select('*')
-      .eq('id', attemptId)
-      .single();
-
-    if (attErr || !attemptRow) return null;
-
-    let descriptiveTotal = 0;
-
-    for (const item of evaluations) {
-      const marks = Math.max(0, Number(item.marksObtained) || 0);
-      descriptiveTotal += marks;
-
-      await db
-        .from('assessment_answers')
-        .update({
-          marks_obtained: marks,
-          mentor_feedback: item.mentorFeedback || null,
-          evaluated_at: timestamp,
-          updated_at: timestamp,
-        })
-        .eq('attempt_id', attemptId)
-        .eq('question_id', item.questionId);
-    }
-
-    const mcqScore = Number(attemptRow.mcq_score || 0);
-    const finalTotal = mcqScore + descriptiveTotal;
-
-    const { data: updated, error: upErr } = await db
-      .from('assessment_attempts')
-      .update({
-        descriptive_score: descriptiveTotal,
-        total_score: finalTotal,
-        is_evaluated: true,
-        status: 'evaluated',
-        evaluated_by: mentorId,
-        evaluated_at: timestamp,
-        general_feedback: generalFeedback || null,
-        updated_at: timestamp,
-      })
-      .eq('id', attemptId)
-      .select('*')
-      .single();
-
-    if (upErr) throw new Error(`Database error evaluating attempt: ${upErr.message}`);
-
-    return mapAttemptRow(updated);
+    const { data, error } = await this.getDb().rpc('evaluate_assessment_attempt', {
+      p_attempt_id: attemptId, p_evaluator_id: mentorId, p_is_admin: isAdmin,
+      p_evaluations: evaluations, p_general_feedback: generalFeedback || null,
+    });
+    if (error) throw new Error('Unable to evaluate attempt.');
+    return data ? mapAttemptRow(Array.isArray(data) ? data[0] : data) : null;
   }
 }
 

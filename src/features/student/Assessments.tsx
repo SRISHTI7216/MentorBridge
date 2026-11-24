@@ -4,6 +4,9 @@ import { StudentAssessmentItem } from '../../types/assessment';
 import { Card } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
+import { AnswerSaveQueue, toggleObjectiveAnswer, type AnswerSaveStatus } from './assessmentAnswerWorkflow';
+
+type AnswerWrite = { attemptId: string; selectedOptionId?: string; selectedOptionIds?: string[]; descriptiveAnswer?: string };
 
 export const StudentAssessments: React.FC = () => {
   const [assessments, setAssessments] = useState<StudentAssessmentItem[]>([]);
@@ -24,8 +27,8 @@ export const StudentAssessments: React.FC = () => {
 
   const [currentQuestionIdx, setCurrentQuestionIdx] = useState<number>(0);
   const [selectedOptions, setSelectedOptions] = useState<Record<string, string>>({});
+  const [selectedOptionIds, setSelectedOptionIds] = useState<Record<string, string[]>>({});
   const [descriptiveAnswers, setDescriptiveAnswers] = useState<Record<string, string>>({});
-  const [isSavingAnswer, setIsSavingAnswer] = useState<boolean>(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
   const [showSubmitConfirm, setShowSubmitConfirm] = useState<boolean>(false);
   const [isSubmittingExam, setIsSubmittingExam] = useState<boolean>(false);
@@ -33,7 +36,22 @@ export const StudentAssessments: React.FC = () => {
 
   // Auto-save statuses and debounce trackers per question
   const [saveStatuses, setSaveStatuses] = useState<Record<string, 'idle' | 'saving' | 'saved' | 'error'>>({});
-  const debounceTimers = useRef<Record<string, any>>({});
+  const answerDraftsRef = useRef<Record<string, Omit<AnswerWrite, 'attemptId'>>>({});
+  const activeAttemptIdRef = useRef<string | null>(null);
+  const startInFlightRef = useRef(false);
+  const submitInFlightRef = useRef(false);
+  const answerSaveQueueRef = useRef<AnswerSaveQueue<AnswerWrite> | null>(null);
+  if (!answerSaveQueueRef.current) {
+    answerSaveQueueRef.current = new AnswerSaveQueue<AnswerWrite>(async (questionId, value) => {
+      const result = await apiClient.saveAssessmentAnswer(value.attemptId, { questionId, selectedOptionId: value.selectedOptionId,
+        selectedOptionIds: value.selectedOptionIds, descriptiveAnswer: value.descriptiveAnswer });
+      if (result.error) throw new Error(result.error);
+    }, (questionId, status: AnswerSaveStatus) => {
+      setSaveStatuses(previous => ({ ...previous, [questionId]: status }));
+      if (status === 'saved') setSaveSuccessMsg('Answers saved');
+    });
+  }
+  const [submissionNotice, setSubmissionNotice] = useState<string | null>(null);
 
   // Pre-Exam Briefing Dialog
   const [briefingAssessment, setBriefingAssessment] = useState<StudentAssessmentItem | null>(null);
@@ -75,14 +93,18 @@ export const StudentAssessments: React.FC = () => {
 
   // Countdown timer for active examination
   useEffect(() => {
-    if (!activeExam || activeExam.remainingSeconds <= 0) return;
+    if (!activeExam) return;
+    if (activeExam.remainingSeconds <= 0) {
+      window.setTimeout(() => handleAutoSubmit(activeExam.attempt.id), 0);
+      return;
+    }
 
     const interval = setInterval(() => {
       setActiveExam((prev) => {
         if (!prev) return null;
         if (prev.remainingSeconds <= 1) {
           clearInterval(interval);
-          handleAutoSubmit(prev.attempt.id);
+          if (prev.remainingSeconds > 0) window.setTimeout(() => handleAutoSubmit(prev.attempt.id), 0);
           return { ...prev, remainingSeconds: 0 };
         }
         return { ...prev, remainingSeconds: prev.remainingSeconds - 1 };
@@ -92,161 +114,134 @@ export const StudentAssessments: React.FC = () => {
     return () => clearInterval(interval);
   }, [activeExam?.attempt?.id]);
 
-  const handleAutoSubmit = async (attemptId: string) => {
+  const submitAttempt = async (attemptId: string, timedOut = false): Promise<boolean> => {
+    if (submitInFlightRef.current) return false;
+    submitInFlightRef.current = true;
     try {
+      const savesSucceeded = await answerSaveQueueRef.current!.flushAll();
+      if (!savesSucceeded && !timedOut) throw new Error('Some answers could not be saved. Retry saving them before submitting.');
       const res = await apiClient.submitAssessmentAttempt(attemptId);
-      if (res.data) {
-        setSubmissionCompleted(res.data.attempt);
-        sessionStorage.removeItem('active_assessment_id');
-        setActiveExam(null);
-        loadData();
-      }
-    } catch (err: any) {
-      alert('Time expired. Attempt was automatically submitted.');
+      if (res.error) throw new Error(res.error);
+      if (!res.data) throw new Error('Submission was not confirmed by the server. Retry safely.');
+      setErrorMessage(null);
+      setShowSubmitConfirm(false);
+      setSubmissionNotice(!savesSucceeded ? 'Time expired. The attempt was submitted with answers saved before the last save failure.' : null);
+      setSubmissionCompleted(res.data.attempt);
       sessionStorage.removeItem('active_assessment_id');
+      activeAttemptIdRef.current = null;
+      answerSaveQueueRef.current!.reset();
       setActiveExam(null);
-      loadData();
+      await loadData();
+      return true;
+    } catch (err: any) {
+      setErrorMessage(timedOut ? 'Time has expired. Submission is waiting for a connection. Retry submission to safely finish this attempt.' : (err?.message || 'Unable to submit the assessment. Please retry.'));
+      return false;
+    } finally {
+      submitInFlightRef.current = false;
     }
   };
 
+  const handleAutoSubmit = async (attemptId: string) => submitAttempt(attemptId, true);
+
   const startExam = async (assessmentItem: StudentAssessmentItem) => {
+    if (startInFlightRef.current) return;
+    startInFlightRef.current = true;
     setBriefingAssessment(null);
+    setErrorMessage(null);
     setIsLoading(true);
     try {
       const res = await apiClient.startAssessmentAttempt(assessmentItem.id);
       if (res.data) {
         const exam = res.data;
+        activeAttemptIdRef.current = exam.attempt.id;
+        answerSaveQueueRef.current!.reset();
+        answerDraftsRef.current = {};
         setActiveExam(exam);
         setCurrentQuestionIdx(0);
         sessionStorage.setItem('active_assessment_id', assessmentItem.id);
 
         // Pre-populate saved answers
         const optMap: Record<string, string> = {};
+        const multiOptMap: Record<string, string[]> = {};
         const descMap: Record<string, string> = {};
         const statusMap: Record<string, 'idle' | 'saving' | 'saved' | 'error'> = {};
 
         (exam.answers || []).forEach((ans: any) => {
           if (ans.selectedOptionId) {
             optMap[ans.questionId] = ans.selectedOptionId;
+            answerDraftsRef.current[ans.questionId] = { selectedOptionId: ans.selectedOptionId };
+            statusMap[ans.questionId] = 'saved';
+          }
+          if (Array.isArray(ans.selectedOptionIds) && ans.selectedOptionIds.length) {
+            multiOptMap[ans.questionId] = ans.selectedOptionIds;
+            answerDraftsRef.current[ans.questionId] = { selectedOptionIds: ans.selectedOptionIds };
             statusMap[ans.questionId] = 'saved';
           }
           if (ans.descriptiveAnswer) {
             descMap[ans.questionId] = ans.descriptiveAnswer;
+            answerDraftsRef.current[ans.questionId] = { descriptiveAnswer: ans.descriptiveAnswer };
             statusMap[ans.questionId] = 'saved';
           }
         });
 
         setSelectedOptions(optMap);
+        setSelectedOptionIds(multiOptMap);
         setDescriptiveAnswers(descMap);
         setSaveStatuses(statusMap);
       } else if (res.error) {
-        alert(res.error);
+        setErrorMessage(res.error);
+      } else {
+        setErrorMessage('Assessment could not be started. Refresh the list and try again.');
       }
     } catch (err: any) {
-      alert(err?.message || 'Failed to start assessment.');
+      setErrorMessage(err?.message || 'Failed to start assessment. It may no longer be available; refresh and try again.');
     } finally {
+      startInFlightRef.current = false;
       setIsLoading(false);
     }
   };
 
-  // Immediate save for MCQ selections
-  const handleSelectOption = async (qId: string, optId: string) => {
-    if (!activeExam) return;
-    setSelectedOptions((prev) => ({ ...prev, [qId]: optId }));
-    setSaveStatuses((prev) => ({ ...prev, [qId]: 'saving' }));
-    setIsSavingAnswer(true);
-
-    try {
-      await apiClient.saveAssessmentAnswer(activeExam.attempt.id, {
-        questionId: qId,
-        selectedOptionId: optId,
-        descriptiveAnswer: descriptiveAnswers[qId] || undefined,
-      });
-      setSaveStatuses((prev) => ({ ...prev, [qId]: 'saved' }));
-      setSaveSuccessMsg('Option saved');
-      setTimeout(() => setSaveSuccessMsg(null), 2000);
-    } catch (err: any) {
-      console.error('Failed to save MCQ answer:', err);
-      setSaveStatuses((prev) => ({ ...prev, [qId]: 'error' }));
-    } finally {
-      setIsSavingAnswer(false);
-    }
+  const scheduleAnswerSave = (questionId: string, draft: Omit<AnswerWrite, 'attemptId'>, delayMs = 300) => {
+    const attemptId = activeAttemptIdRef.current;
+    if (!attemptId) return;
+    answerDraftsRef.current[questionId] = draft;
+    answerSaveQueueRef.current!.schedule(questionId, { ...draft, attemptId }, delayMs);
   };
 
-  // Debounced auto-save for descriptive answers
+  // Debounce rapid option changes and serialize per-question writes.
+  const handleSelectOption = (qId: string, optId: string) => {
+    if (!activeExam) return;
+    const question = activeExam.questions.find((item: any) => item.id === qId);
+    const current = answerDraftsRef.current[qId] || {};
+    const selection = toggleObjectiveAnswer(question?.questionType || 'mcq', optId, current.selectedOptionIds || []);
+    const draft = question?.questionType === 'multiple_select'
+      ? { selectedOptionIds: selection.selectedOptionIds }
+      : { selectedOptionId: selection.selectedOptionId };
+    if (question?.questionType === 'multiple_select') setSelectedOptionIds(prev => ({ ...prev, [qId]: selection.selectedOptionIds }));
+    else setSelectedOptions(prev => ({ ...prev, [qId]: optId }));
+    scheduleAnswerSave(qId, draft);
+  };
+
+  // Debounced auto-save for descriptive answers.
   const handleDescriptiveChange = (qId: string, text: string) => {
     if (!activeExam) return;
     setDescriptiveAnswers((prev) => ({ ...prev, [qId]: text }));
-    setSaveStatuses((prev) => ({ ...prev, [qId]: 'saving' }));
-
-    if (debounceTimers.current[qId]) {
-      clearTimeout(debounceTimers.current[qId]);
-    }
-
-    debounceTimers.current[qId] = setTimeout(async () => {
-      try {
-        await apiClient.saveAssessmentAnswer(activeExam.attempt.id, {
-          questionId: qId,
-          selectedOptionId: selectedOptions[qId] || undefined,
-          descriptiveAnswer: text,
-        });
-        setSaveStatuses((prev) => ({ ...prev, [qId]: 'saved' }));
-      } catch (err) {
-        console.error('Failed to auto-save descriptive answer:', err);
-        setSaveStatuses((prev) => ({ ...prev, [qId]: 'error' }));
-      }
-    }, 600);
+    scheduleAnswerSave(qId, { descriptiveAnswer: text }, 500);
   };
 
-  // Flush save on blur or navigation
+  // Flush pending save on blur, navigation, and before final submission.
   const flushCurrentAnswerSave = async (qId: string) => {
-    if (!activeExam) return;
-    if (debounceTimers.current[qId]) {
-      clearTimeout(debounceTimers.current[qId]);
-    }
-    setSaveStatuses((prev) => ({ ...prev, [qId]: 'saving' }));
-    setIsSavingAnswer(true);
-
-    try {
-      await apiClient.saveAssessmentAnswer(activeExam.attempt.id, {
-        questionId: qId,
-        selectedOptionId: selectedOptions[qId] || undefined,
-        descriptiveAnswer: descriptiveAnswers[qId] || undefined,
-      });
-      setSaveStatuses((prev) => ({ ...prev, [qId]: 'saved' }));
-      setSaveSuccessMsg('Answer saved');
-      setTimeout(() => setSaveSuccessMsg(null), 2000);
-    } catch (err: any) {
-      console.error('Failed to save answer:', err);
-      setSaveStatuses((prev) => ({ ...prev, [qId]: 'error' }));
-    } finally {
-      setIsSavingAnswer(false);
-    }
+    if (!activeExam) return false;
+    return answerSaveQueueRef.current!.flush(qId);
   };
 
   const handleSubmitFinalExam = async () => {
     if (!activeExam) return;
+    if (submitInFlightRef.current) return;
     setIsSubmittingExam(true);
-    try {
-      // Save current question answer before submitting
-      const currentQ = activeExam.questions[currentQuestionIdx];
-      if (currentQ) {
-        await flushCurrentAnswerSave(currentQ.id);
-      }
-
-      const res = await apiClient.submitAssessmentAttempt(activeExam.attempt.id);
-      if (res.data) {
-        setSubmissionCompleted(res.data.attempt);
-        sessionStorage.removeItem('active_assessment_id');
-        setShowSubmitConfirm(false);
-        setActiveExam(null);
-        await loadData();
-      }
-    } catch (err: any) {
-      alert(err?.message || 'Failed to submit examination.');
-    } finally {
-      setIsSubmittingExam(false);
-    }
+    const success = await submitAttempt(activeExam.attempt.id, activeExam.remainingSeconds <= 0);
+    if (!success && activeExam.remainingSeconds > 0) setShowSubmitConfirm(true);
+    setIsSubmittingExam(false);
   };
 
   const handleViewReview = async (assessmentItem: StudentAssessmentItem) => {
@@ -327,9 +322,8 @@ export const StudentAssessments: React.FC = () => {
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key as any)}
-              className={`px-3 py-1.5 rounded-lg transition-colors ${
-                activeTab === tab.key ? 'bg-white text-primary shadow-xs' : 'text-slate-600 hover:text-slate-900'
-              }`}
+              className={`px-3 py-1.5 rounded-lg transition-colors ${activeTab === tab.key ? 'bg-white text-primary shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                }`}
             >
               {tab.label}
             </button>
@@ -380,23 +374,25 @@ export const StudentAssessments: React.FC = () => {
                       a.status === 'available'
                         ? 'warning'
                         : a.status === 'in_progress'
-                        ? 'neutral'
-                        : a.status === 'evaluated'
-                        ? 'success'
-                        : 'neutral'
+                          ? 'neutral'
+                          : a.status === 'evaluated'
+                            ? 'success'
+                            : 'neutral'
                     }
                   >
                     {a.status === 'available'
                       ? 'Available • Take Exam'
                       : a.status === 'in_progress'
-                      ? 'In Progress'
-                      : a.status === 'submitted'
-                      ? 'Submitted • Under Review'
-                      : a.status === 'evaluated'
-                      ? 'Graded & Published'
-                      : a.status === 'upcoming'
-                      ? 'Scheduled'
-                      : 'Deadline Passed'}
+                        ? 'In Progress'
+                        : a.status === 'submitted'
+                          ? 'Submitted • Under Review'
+                          : a.status === 'evaluated'
+                            ? 'Graded & Published'
+                            : a.status === 'upcoming'
+                              ? 'Scheduled'
+                              : a.status === 'unavailable'
+                                ? 'Unavailable'
+                              : 'Deadline Passed'}
                   </Badge>
                   <span className="text-xs font-mono font-semibold text-primary">{a.subject}</span>
                   <span className="text-slate-300">•</span>
@@ -405,6 +401,7 @@ export const StudentAssessments: React.FC = () => {
 
                 <h2 className="text-base font-bold text-slate-900">{a.title}</h2>
                 <p className="text-xs text-slate-600 line-clamp-1">{a.description}</p>
+                {(a.modules?.length ?? 0) > 0 && <p className="text-xs text-indigo-700">Module: {a.modules!.map(module => module.title || module.name || module.code).filter(Boolean).join(', ')}</p>}
 
                 <div className="flex flex-wrap gap-2 text-xs text-slate-500 font-mono pt-1">
                   <span>Mentor: {a.mentorName}</span>
@@ -414,7 +411,21 @@ export const StudentAssessments: React.FC = () => {
                   <span>Total Marks: {a.totalMarks}</span>
                   <span>•</span>
                   <span>Deadline: {new Date(a.endTime).toLocaleString()}</span>
+                  <span>Passing: {a.passingMarks} / {a.totalMarks}</span>
+                  <span>Attempts: {a.attemptsUsed} / {a.allowedAttempts}</span>
                 </div>
+                {(a.attemptHistory?.length ?? 0) > 0 && (
+                  <div className="pt-2 text-[11px] text-slate-500 space-y-1" aria-label="Attempt history">
+                    <p className="font-semibold text-slate-700">Attempt history</p>
+                    {(a.attemptHistory || []).map((attempt: any) => (
+                      <p key={attempt.id}>
+                        Attempt {attempt.attemptNumber}: {attempt.status.replace('_', ' ')}
+                        {attempt.submittedAt ? ` · ${new Date(attempt.submittedAt).toLocaleString()}` : ''}
+                        {attempt.totalScore !== undefined ? ` · ${attempt.totalScore}/${a.totalMarks} (${attempt.scorePercentage}%) · ${attempt.passed ? 'Passed' : 'Not passed'}` : ''}
+                      </p>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Action Side */}
@@ -424,6 +435,9 @@ export const StudentAssessments: React.FC = () => {
                     <p className="text-[10px] text-slate-400 uppercase font-semibold">Your Score</p>
                     <p className="font-bold text-emerald-700 text-base mt-0.5 font-display">
                       {a.score} / {a.totalMarks}
+                    </p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      {a.scorePercentage ?? 0}% · {a.passed ? 'Passed' : 'Not passed'}
                     </p>
                   </div>
                 ) : null}
@@ -453,7 +467,7 @@ export const StudentAssessments: React.FC = () => {
                   </Button>
                 ) : (
                   <Button size="sm" variant="outline" disabled>
-                    {a.status === 'submitted' ? 'Evaluation Pending' : 'Exam Closed'}
+                    {a.status === 'submitted' ? 'Evaluation Pending' : a.status === 'unavailable' ? 'Unavailable' : 'Exam Closed'}
                   </Button>
                 )}
               </div>
@@ -495,15 +509,16 @@ export const StudentAssessments: React.FC = () => {
                 </div>
                 <div>
                   <span className="text-slate-400 block uppercase">Passing Score</span>
-                  <span className="font-bold text-slate-800">{briefingAssessment.passingMarks} Marks</span>
+                  <span className="font-bold text-slate-800">{briefingAssessment.passingMarks} Marks ({briefingAssessment.passingPercentage ?? 0}%)</span>
                 </div>
                 <div>
                   <span className="text-slate-400 block uppercase">Attempts Allowed</span>
                   <span className="font-bold text-slate-800">
-                    {briefingAssessment.attemptsUsed + 1} of {briefingAssessment.allowedAttempts}
+                    {briefingAssessment.attemptsUsed + 1} of {briefingAssessment.allowedAttempts} ({briefingAssessment.remainingAttempts ?? Math.max(0, briefingAssessment.allowedAttempts - briefingAssessment.attemptsUsed)} remaining)
                   </span>
                 </div>
               </div>
+              <p className="text-[11px] text-slate-500">Available from {new Date(briefingAssessment.startTime).toLocaleString()} until {new Date(briefingAssessment.endTime).toLocaleString()}.</p>
 
               <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-900 text-[11px] space-y-1">
                 <p className="font-bold flex items-center gap-1.5">
@@ -553,6 +568,9 @@ export const StudentAssessments: React.FC = () => {
 
             {/* Countdown Clock */}
             <div className="flex items-center gap-4">
+              {errorMessage && (
+                <span role="alert" className="text-[11px] text-rose-300 max-w-64">{errorMessage} Use Finish &amp; Submit to retry.</span>
+              )}
               {saveSuccessMsg && (
                 <span className="text-[11px] text-emerald-400 font-mono flex items-center gap-1 animate-pulse">
                   <span className="material-symbols-outlined text-sm">check_circle</span>
@@ -560,11 +578,10 @@ export const StudentAssessments: React.FC = () => {
                 </span>
               )}
               <div
-                className={`px-3 py-1.5 rounded-xl border flex items-center gap-2 font-mono text-sm font-bold ${
-                  activeExam.remainingSeconds < 300
+                className={`px-3 py-1.5 rounded-xl border flex items-center gap-2 font-mono text-sm font-bold ${activeExam.remainingSeconds < 300
                     ? 'bg-rose-950/60 border-rose-600 text-rose-300 animate-pulse'
                     : 'bg-slate-800/80 border-slate-700 text-emerald-400'
-                }`}
+                  }`}
               >
                 <span className="material-symbols-outlined text-base">timer</span>
                 {formatTimer(activeExam.remainingSeconds)}
@@ -595,7 +612,7 @@ export const StudentAssessments: React.FC = () => {
                       <div className="flex justify-between items-start pb-3 border-b border-slate-800">
                         <div className="flex items-center gap-3">
                           <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                            {q.questionType === 'mcq' ? 'Multiple Choice' : 'Descriptive'}
+                            {q.questionType === 'multiple_select' ? 'Select all that apply' : q.questionType === 'true_false' ? 'True or false' : q.questionType === 'mcq' ? 'Multiple choice' : 'Descriptive'}
                           </span>
                           <span className="text-xs text-slate-400 font-mono">Question #{currentQuestionIdx + 1}</span>
 
@@ -635,27 +652,28 @@ export const StudentAssessments: React.FC = () => {
                       <p className="text-base text-slate-100 font-medium leading-relaxed">{q.questionText}</p>
 
                       {/* MCQ Choice Interface */}
-                      {q.questionType === 'mcq' && q.options && (
+                      {['mcq', 'multiple_select', 'true_false'].includes(q.questionType) && q.options && (
                         <div className="space-y-3 pt-2">
                           {q.options.map((opt: any, optIdx: number) => {
-                            const isSelected = selectedOptions[q.id] === opt.id;
+                            const isSelected = q.questionType === 'multiple_select'
+                              ? (selectedOptionIds[q.id] || []).includes(opt.id)
+                              : selectedOptions[q.id] === opt.id;
                             return (
                               <button
                                 key={opt.id}
                                 type="button"
                                 onClick={() => handleSelectOption(q.id, opt.id)}
-                                className={`w-full text-left p-4 rounded-xl border transition-all flex items-center gap-3 text-xs ${
-                                  isSelected
+                                aria-pressed={isSelected}
+                                className={`w-full text-left p-4 rounded-xl border transition-all flex items-center gap-3 text-xs ${isSelected
                                     ? 'bg-primary/20 border-primary text-white shadow-md'
                                     : 'bg-slate-800/50 border-slate-700 hover:bg-slate-800 text-slate-300'
-                                }`}
+                                  }`}
                               >
                                 <div
-                                  className={`w-6 h-6 rounded-full border flex items-center justify-center font-mono font-bold text-[11px] shrink-0 ${
-                                    isSelected
+                                  className={`w-6 h-6 rounded-full border flex items-center justify-center font-mono font-bold text-[11px] shrink-0 ${isSelected
                                       ? 'border-primary bg-primary text-white'
                                       : 'border-slate-600 text-slate-400'
-                                  }`}
+                                    }`}
                                 >
                                   {String.fromCharCode(65 + optIdx)}
                                 </div>
@@ -687,10 +705,10 @@ export const StudentAssessments: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => flushCurrentAnswerSave(q.id)}
-                              disabled={isSavingAnswer}
+                              disabled={saveStatuses[q.id] === 'saving'}
                               className="text-primary hover:underline font-semibold"
                             >
-                              {isSavingAnswer ? 'Saving...' : 'Save Draft Answer'}
+                              {saveStatuses[q.id] === 'saving' ? 'Saving...' : 'Save Draft Answer'}
                             </button>
                           </div>
                         </div>
@@ -762,8 +780,10 @@ export const StudentAssessments: React.FC = () => {
                 {activeExam.questions.map((q, idx) => {
                   const isCurrent = idx === currentQuestionIdx;
                   const isAnswered =
-                    q.questionType === 'mcq'
+                    ['mcq', 'true_false'].includes(q.questionType)
                       ? Boolean(selectedOptions[q.id])
+                      : q.questionType === 'multiple_select'
+                        ? Boolean(selectedOptionIds[q.id]?.length)
                       : Boolean((descriptiveAnswers[q.id] || '').trim().length > 0);
 
                   return (
@@ -774,13 +794,12 @@ export const StudentAssessments: React.FC = () => {
                         if (currentQ) flushCurrentAnswerSave(currentQ.id);
                         setCurrentQuestionIdx(idx);
                       }}
-                      className={`h-9 rounded-lg font-mono text-xs font-bold transition-all flex items-center justify-center ${
-                        isCurrent
+                      className={`h-9 rounded-lg font-mono text-xs font-bold transition-all flex items-center justify-center ${isCurrent
                           ? 'ring-2 ring-primary ring-offset-2 ring-offset-slate-900 bg-primary text-white'
                           : isAnswered
-                          ? 'bg-emerald-600/30 text-emerald-300 border border-emerald-500/50'
-                          : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                      }`}
+                            ? 'bg-emerald-600/30 text-emerald-300 border border-emerald-500/50'
+                            : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                        }`}
                     >
                       {idx + 1}
                     </button>
@@ -791,7 +810,11 @@ export const StudentAssessments: React.FC = () => {
               <div className="text-[11px] text-slate-400 space-y-1.5 pt-3 border-t border-slate-800">
                 <div className="flex items-center gap-2">
                   <span className="w-3 h-3 rounded bg-emerald-600/40 border border-emerald-500/50 inline-block" />
-                  <span>Answered ({Object.keys(selectedOptions).length + Object.values(descriptiveAnswers).filter((v) => v.trim()).length})</span>
+                  <span>Answered ({activeExam.questions.filter((question: any) => question.questionType === 'multiple_select'
+                    ? Boolean(selectedOptionIds[question.id]?.length)
+                    : ['mcq', 'true_false'].includes(question.questionType)
+                      ? Boolean(selectedOptions[question.id])
+                      : Boolean((descriptiveAnswers[question.id] || '').trim())).length})</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="w-3 h-3 rounded bg-slate-800 border border-slate-700 inline-block" />
@@ -869,9 +892,10 @@ export const StudentAssessments: React.FC = () => {
             <div>
               <h3 className="font-bold text-lg text-slate-900 font-display">Assessment Submitted Successfully!</h3>
               <p className="text-xs text-slate-500 mt-1">
-                Your examination responses have been securely logged in the institutional database.
+                Your assessment submission has been recorded.
               </p>
             </div>
+            {submissionNotice && <p role="status" className="rounded bg-amber-50 p-3 text-xs text-amber-900">{submissionNotice}</p>}
             <p className="text-xs font-mono text-slate-400">
               Submitted at: {new Date(submissionCompleted.submittedAt || Date.now()).toLocaleString()}
             </p>
@@ -908,6 +932,11 @@ export const StudentAssessments: React.FC = () => {
               </button>
             </div>
 
+            {reviewData.isResultsPublished !== true ? (
+              <p role="status" className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-900">
+                {reviewData.message || 'Scores and answer review will appear after your mentor releases the results.'}
+              </p>
+            ) : <>
             {/* Score Banner */}
             <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between">
               <div>
@@ -931,8 +960,64 @@ export const StudentAssessments: React.FC = () => {
               </div>
             )}
 
+            {reviewData.questionReviewAvailable !== true && (
+              <p className="p-3 rounded-xl bg-slate-50 border text-xs text-slate-600">
+                Question level review has not been released for this assessment.
+              </p>
+            )}
+
+            {/* AI Pedagogical Feedback & Diagnostic Analysis */}
+            {reviewData.aiFeedback && (
+              <div className="p-4 bg-gradient-to-br from-indigo-50/70 via-purple-50/40 to-sky-50/60 border border-indigo-200/80 rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="material-symbols-outlined text-indigo-600 text-lg">psychology</span>
+                    <h4 className="font-bold text-xs text-indigo-950 uppercase tracking-wider">AI Pedagogical Analysis</h4>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 font-medium">
+                    {reviewData.aiFeedback.modelName || 'AI Evaluation'}
+                  </span>
+                </div>
+                {reviewData.aiFeedback.summary && (
+                  <p className="text-xs text-slate-700 leading-relaxed font-medium">
+                    {reviewData.aiFeedback.summary}
+                  </p>
+                )}
+                {reviewData.aiFeedback.strengths && reviewData.aiFeedback.strengths.length > 0 && (
+                  <div>
+                    <span className="text-[11px] font-semibold text-emerald-800 block mb-1">Key Strengths:</span>
+                    <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-slate-700">
+                      {reviewData.aiFeedback.strengths.map((str: string, i: number) => (
+                        <li key={i}>{str}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {reviewData.aiFeedback.weaknesses && reviewData.aiFeedback.weaknesses.length > 0 && (
+                  <div>
+                    <span className="text-[11px] font-semibold text-amber-800 block mb-1">Areas for Improvement:</span>
+                    <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-slate-700">
+                      {reviewData.aiFeedback.weaknesses.map((w: string, i: number) => (
+                        <li key={i}>{w}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {reviewData.aiFeedback.recommendedActions && reviewData.aiFeedback.recommendedActions.length > 0 && (
+                  <div>
+                    <span className="text-[11px] font-semibold text-indigo-800 block mb-1">Recommended Action Plan:</span>
+                    <ul className="list-disc pl-4 space-y-0.5 text-[11px] text-slate-700">
+                      {reviewData.aiFeedback.recommendedActions.map((act: string, i: number) => (
+                        <li key={i}>{act}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Questions Breakdown */}
-            <div className="space-y-4 text-xs">
+            {reviewData.questionReviewAvailable === true && <div className="space-y-4 text-xs">
               {reviewData.questions?.map((q: any, idx: number) => {
                 const ans = reviewData.answers?.find((a: any) => a.questionId === q.id);
 
@@ -957,13 +1042,12 @@ export const StudentAssessments: React.FC = () => {
                           return (
                             <div
                               key={opt.id}
-                              className={`p-2 rounded-lg border text-xs flex items-center justify-between ${
-                                isCorrect
+                              className={`p-2 rounded-lg border text-xs flex items-center justify-between ${isCorrect
                                   ? 'bg-emerald-50 border-emerald-400 text-emerald-950 font-semibold'
                                   : wasSelected
-                                  ? 'bg-rose-50 border-rose-300 text-rose-950 font-medium'
-                                  : 'border-slate-100 text-slate-600'
-                              }`}
+                                    ? 'bg-rose-50 border-rose-300 text-rose-950 font-medium'
+                                    : 'border-slate-100 text-slate-600'
+                                }`}
                             >
                               <span>
                                 {String.fromCharCode(65 + optIdx)}. {opt.optionText}
@@ -1007,7 +1091,8 @@ export const StudentAssessments: React.FC = () => {
                   </div>
                 );
               })}
-            </div>
+            </div>}
+            </>}
 
             <div className="flex justify-end pt-2 border-t">
               <Button size="sm" onClick={() => setReviewData(null)}>

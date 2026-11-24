@@ -1,4 +1,4 @@
-export type QuestionType = 'mcq' | 'descriptive';
+export type QuestionType = 'mcq' | 'multiple_select' | 'true_false' | 'descriptive';
 export type AssessmentStatus = 'draft' | 'published' | 'completed' | 'archived';
 export type AttemptStatus = 'in_progress' | 'submitted' | 'evaluated' | 'abandoned';
 
@@ -39,6 +39,7 @@ export interface AssessmentAssignment {
 export interface Assessment {
   id: string;
   mentorId: string;
+  originModuleId?: string | null;
   academicTermId: string;
   title: string;
   description: string;
@@ -63,6 +64,7 @@ export interface Assessment {
   averageScore?: number;
   questions?: AssessmentQuestion[];
   assignments?: AssessmentAssignment[];
+  modules?: Array<{ id: string; code: string; title: string; version: number; status: 'draft' | 'published' | 'archived' }>;
 }
 
 export interface AssessmentAnswer {
@@ -137,17 +139,33 @@ export interface StudentAssessmentItem {
   subject: string;
   topic: string;
   description: string;
+  modules?: Array<{ id: string; name?: string; title?: string; code?: string }>;
   mentorName: string;
   durationMinutes: number;
   totalMarks: number;
   passingMarks: number;
   startTime: string;
   endTime: string;
-  status: 'available' | 'upcoming' | 'in_progress' | 'submitted' | 'evaluated' | 'missed';
+  status: 'available' | 'upcoming' | 'in_progress' | 'submitted' | 'evaluated' | 'missed' | 'unavailable';
   currentAttemptId?: string;
   attemptNumber?: number;
   allowedAttempts: number;
   attemptsUsed: number;
+  remainingAttempts?: number;
+  passingPercentage?: number;
+  resultsVisible?: boolean;
+  passed?: boolean;
+  scorePercentage?: number;
+  attemptHistory?: Array<{
+    id: string;
+    attemptNumber: number;
+    status: AttemptStatus;
+    startedAt: string;
+    submittedAt?: string | null;
+    totalScore?: number;
+    scorePercentage?: number;
+    passed?: boolean;
+  }>;
   score?: number;
   isResultsPublished?: boolean;
 }

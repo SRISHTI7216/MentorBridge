@@ -214,7 +214,7 @@ export const StudentDashboard: React.FC = () => {
                 <span>Advisor Weekly Guidance:</span>
               </p>
               <p className="text-[11px] leading-relaxed">
-                "Great work on the Dynamic Programming set, Alex. Focus this week on multi-threading sync primitives for Criterion 3.2 compliance." — Dr. Vance
+                "Great work on the Dynamic Programming set, Alex. Focus this week on multi-threading sync primitives for Criterion 3.2 compliance." — Dr. Rucha
               </p>
             </div>
 

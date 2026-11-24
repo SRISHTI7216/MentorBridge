@@ -4,9 +4,13 @@ import dotenv from 'dotenv';
 import { isSupabaseAdminConfigured, supabaseAdmin } from './lib/supabaseAdmin.js';
 import adminRoutes from './routes/adminRoutes.js';
 import assessmentRoutes from './routes/assessmentRoutes.js';
+import sourceDocumentRoutes from './routes/sourceDocumentRoutes.js';
+import assessmentGenerationRoutes from './routes/assessmentGenerationRoutes.js';
 import analyticsRoutes from './routes/analyticsRoutes.js';
+import learningRoutes from './routes/learningRoutes.js';
 import { aiFeedbackQueue } from './services/aiFeedbackQueue.js';
 import { weeklySchedulerService } from './services/weeklySchedulerService.js';
+import { shouldStartBackgroundJobs } from './backgroundJobsMode.js';
 
 dotenv.config();
 
@@ -21,9 +25,14 @@ app.use('/api/admin', adminRoutes);
 
 // Weekly Assessment Engine API Routes (Secured by Role Auth)
 app.use('/api/assessments', assessmentRoutes);
+app.use('/api/assessments', sourceDocumentRoutes);
+app.use('/api/assessments', assessmentGenerationRoutes);
 
 // Student & Mentor Analytics API Routes (Secured by Role Auth)
 app.use('/api/analytics', analyticsRoutes);
+
+// Student learning experience API (student identity comes from verified session)
+app.use('/api/learning', learningRoutes);
 
 // Backend Healthcheck
 app.get('/api/health', async (_req: Request, res: Response) => {
@@ -65,12 +74,16 @@ app.get('/api/version', (_req: Request, res: Response) => {
 if (process.env.NODE_ENV !== 'test') {
   const server = app.listen(PORT, () => {
     console.log(`[MentorBridge Server] API running on http://localhost:${PORT}`);
-    // Recover any abandoned jobs or expired leases upon server startup
-    aiFeedbackQueue.recoverAndProcess().catch((err) => {
-      console.error('[MentorBridge Server] Error recovering AI feedback queue:', err);
-    });
-    // Start automated weekly AI progress feedback scheduler
-    weeklySchedulerService.start();
+    if (shouldStartBackgroundJobs()) {
+      // Recover any abandoned jobs or expired leases upon server startup
+      aiFeedbackQueue.recoverAndProcess().catch((err) => {
+        console.error('[MentorBridge Server] Error recovering AI feedback queue:', err);
+      });
+      // Start automated weekly AI progress feedback scheduler
+      weeklySchedulerService.start();
+    } else {
+      console.info('[MentorBridge Server] Background jobs are disabled for this process.');
+    }
   });
 
   const gracefulShutdown = () => {

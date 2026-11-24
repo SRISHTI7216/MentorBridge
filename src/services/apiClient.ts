@@ -20,6 +20,130 @@ export interface ApiResponse<T> {
 
 export type { AttemptReviewResponse, AttemptAiFeedback };
 
+export interface LearningModuleSummary {
+  id: string; code: string; version: number; title: string; description: string | null;
+  semester: number; level: string; estimated_hours: number; week_number: number | null;
+  skills: string[]; is_institutional: boolean; learning_categories: { id: string; code: string; name: string };
+  lessonCount: number; enrollment: any | null; progress: any | null;
+  assignment?: { id: string; status: 'assigned' | 'revoked' | 'completed'; due_date: string | null; assigned_at: string } | null;
+  access_type?: 'assigned' | 'institutional_common';
+}
+
+export interface MentorLearningModule {
+  id: string;
+  category_id: string;
+  academic_term_id: string;
+  created_by: string;
+  code: string;
+  version: number;
+  title: string;
+  description: string | null;
+  semester: number;
+  level: 'Fundamental' | 'Intermediate' | 'Advanced';
+  estimated_hours: number;
+  week_number: number | null;
+  skills: string[];
+  status: 'draft' | 'published' | 'archived';
+  is_institutional: boolean;
+  target_cohort_id: string | null;
+  created_at: string;
+  updated_at: string;
+  learning_categories: { id: string; code: string; name: string } | null;
+  academic_terms: { id: string; code: string; name: string } | null;
+}
+
+export interface MentorModuleOptions {
+  categories: Array<{ id: string; code: string; name: string; display_order: number }>;
+  academicTerms: Array<{
+    id: string;
+    code: string;
+    name: string;
+    start_date: string;
+    end_date: string;
+    is_current: boolean;
+  }>;
+}
+
+export interface AssessmentSourceDocument {
+  id: string; assessmentId: string; moduleId: string; filename: string; mimeType: string; sizeBytes: number;
+  extractionStatus: 'pending' | 'processing' | 'ready' | 'failed' | 'rejected'; extractionErrorCode?: string | null;
+  unitCount?: number; characterCount?: number; rangeKind?: 'page' | 'slide' | 'paragraph' | 'line';
+  availableRanges?: number[]; extractedUnits?: Array<{ number: number; text: string }>;
+  uploadedAt: string; extractedAt?: string | null;
+}
+
+export type AssessmentGenerationPayload = {
+  assessmentId: string; moduleId: string; idempotencyKey: string;
+  documents: Array<{ documentId: string; ranges: Array<{ start: number; end: number }> }>;
+  questionCounts: { mcq: number; multiple_select: number; true_false: number };
+  difficultyDistribution: { easy: number; medium: number; hard: number };
+  cognitiveLevels: Array<'remember' | 'understand' | 'apply' | 'analyze' | 'evaluate' | 'create'>;
+  topicCoverage: string[]; additionalInstructions?: string;
+};
+
+export interface CreateDraftLearningModuleInput {
+  category_id: string;
+  academic_term_id: string;
+  code: string;
+  title: string;
+  semester: number;
+  level: 'Fundamental' | 'Intermediate' | 'Advanced';
+  description?: string;
+}
+
+export type LearningLessonType = 'theory' | 'code_lab' | 'case_study' | 'milestone_prep';
+export type LearningResourceType = 'pdf' | 'article_url' | 'github_repo' | 'doc' | 'book_reference';
+
+export interface MentorLearningLesson {
+  id: string;
+  module_id: string;
+  lesson_order: number;
+  title: string;
+  slug: string;
+  summary: string | null;
+  content_markdown: string;
+  lesson_type: LearningLessonType;
+  estimated_minutes: number;
+  is_mandatory: boolean;
+  code_snippet: string | null;
+  code_language: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MentorLearningResource {
+  id: string;
+  module_id: string;
+  lesson_id: string | null;
+  title: string;
+  resource_type: LearningResourceType;
+  url: string;
+  description: string | null;
+  is_mandatory: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MentorLearningLessonInput {
+  title: string;
+  summary?: string | null;
+  content_markdown: string;
+  lesson_type?: LearningLessonType;
+  estimated_minutes?: number;
+  is_mandatory?: boolean;
+  code_snippet?: string | null;
+  code_language?: string | null;
+}
+
+export interface MentorLearningResourceInput {
+  title: string;
+  resource_type: LearningResourceType;
+  url: string;
+  description?: string | null;
+  is_mandatory?: boolean;
+  lesson_id?: string | null;
+}
+
 async function getAuthHeader(): Promise<Record<string, string>> {
   if (!isSupabaseConfigured()) {
     return {};
@@ -33,6 +157,123 @@ async function getAuthHeader(): Promise<Record<string, string>> {
 }
 
 export const apiClient = {
+  async getMentorLearningModules() {
+    return this.request<{ modules: MentorLearningModule[] }>('/api/learning/mentor/modules');
+  },
+
+  async getMentorModuleOptions() {
+    return this.request<MentorModuleOptions>('/api/learning/mentor/module-options');
+  },
+
+  async createMentorLearningModule(payload: CreateDraftLearningModuleInput) {
+    return this.request<{ module: MentorLearningModule }>('/api/learning/mentor/modules', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async publishMentorLearningModule(moduleId: string) {
+    return this.request<{ message: string; module: MentorLearningModule; publication: { status: 'published'; publishedAt: string | null; updatedAt: string } }>(`/api/learning/mentor/modules/${encodeURIComponent(moduleId)}/publish`, {
+      method: 'POST',
+    });
+  },
+
+  async getEligibleLearningMentees(moduleId: string) {
+    return this.request<{ students: Array<{ id: string; name: string; email: string; student_details: { roll_number: string; semester: number; cohort_id: string | null } }> }>(`/api/learning/mentor/modules/${encodeURIComponent(moduleId)}/mentees`);
+  },
+
+  async getMentorModuleAssignments(moduleId: string) {
+    return this.request<{ assignments: Array<Record<string, any>> }>(`/api/learning/mentor/modules/${encodeURIComponent(moduleId)}/assignments`);
+  },
+
+  async createMentorModuleAssignment(moduleId: string, studentId: string) {
+    return this.request<{ assignment: Record<string, any> }>(`/api/learning/mentor/modules/${encodeURIComponent(moduleId)}/assignments`, {
+      method: 'POST', body: JSON.stringify({ student_id: studentId }),
+    });
+  },
+
+  async getMentorModuleLessons(moduleId: string) {
+    return this.request<{ lessons: MentorLearningLesson[] }>(`/api/learning/mentor/modules/${encodeURIComponent(moduleId)}/lessons`);
+  },
+
+  async createMentorModuleLesson(moduleId: string, payload: MentorLearningLessonInput) {
+    return this.request<{ lesson: MentorLearningLesson }>(`/api/learning/mentor/modules/${encodeURIComponent(moduleId)}/lessons`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async updateMentorModuleLesson(moduleId: string, lessonId: string, payload: Partial<MentorLearningLessonInput>) {
+    return this.request<{ lesson: MentorLearningLesson }>(`/api/learning/mentor/modules/${encodeURIComponent(moduleId)}/lessons/${encodeURIComponent(lessonId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async deleteMentorModuleLesson(moduleId: string, lessonId: string) {
+    return this.request<{ deleted: boolean }>(`/api/learning/mentor/modules/${encodeURIComponent(moduleId)}/lessons/${encodeURIComponent(lessonId)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async reorderMentorModuleLessons(moduleId: string, lessonIds: string[]) {
+    return this.request<{ lessons: MentorLearningLesson[] }>(`/api/learning/mentor/modules/${encodeURIComponent(moduleId)}/lessons/reorder`, {
+      method: 'PUT',
+      body: JSON.stringify({ lessonIds }),
+    });
+  },
+
+  async getMentorModuleResources(moduleId: string) {
+    return this.request<{ resources: MentorLearningResource[] }>(`/api/learning/mentor/modules/${encodeURIComponent(moduleId)}/resources`);
+  },
+
+  async createMentorModuleResource(moduleId: string, payload: MentorLearningResourceInput) {
+    return this.request<{ resource: MentorLearningResource }>(`/api/learning/mentor/modules/${encodeURIComponent(moduleId)}/resources`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async updateMentorModuleResource(moduleId: string, resourceId: string, payload: Partial<MentorLearningResourceInput>) {
+    return this.request<{ resource: MentorLearningResource }>(`/api/learning/mentor/modules/${encodeURIComponent(moduleId)}/resources/${encodeURIComponent(resourceId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async deleteMentorModuleResource(moduleId: string, resourceId: string) {
+    return this.request<{ deleted: boolean }>(`/api/learning/mentor/modules/${encodeURIComponent(moduleId)}/resources/${encodeURIComponent(resourceId)}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async getStudentLearningModules() {
+    return this.request<{ modules: LearningModuleSummary[] }>('/api/learning/student/modules');
+  },
+
+  async getStudentLearningModule(moduleId: string) {
+    return this.request<any>(`/api/learning/student/modules/${encodeURIComponent(moduleId)}`);
+  },
+
+  async enrollStudentLearningModule(moduleId: string) {
+    return this.request<any>(`/api/learning/student/modules/${encodeURIComponent(moduleId)}/enroll`, { method: 'POST' });
+  },
+
+  async enrollStudentAssignedLearningModule(moduleId: string) {
+    return this.request<any>(`/api/learning/student/modules/${encodeURIComponent(moduleId)}/assigned-enroll`, { method: 'POST' });
+  },
+
+  async getStudentLearningProgress(moduleId: string) {
+    return this.request<any>(`/api/learning/student/modules/${encodeURIComponent(moduleId)}/progress`);
+  },
+
+  async completeStudentLearningLesson(moduleId: string, lessonId: string) {
+    return this.request<any>(
+      `/api/learning/student/modules/${encodeURIComponent(moduleId)}/lessons/${encodeURIComponent(lessonId)}/complete`,
+      { method: 'POST' }
+    );
+  },
+
   // Backend Express API Health check
   async checkHealth(): Promise<{ status: string; phase?: string; database?: string; uptime?: number }> {
     try {
@@ -283,6 +524,41 @@ export const apiClient = {
     }>('/api/assessments/mentor');
   },
 
+  async getMentorAssessmentReport(id: string) {
+    return this.request<{ report: any }>(`/api/assessments/${id}/report`);
+  },
+
+  async linkAssessmentToModule(assessmentId: string, moduleId: string) {
+    return this.request<{ message: string }>(`/api/assessments/${encodeURIComponent(assessmentId)}/modules/${encodeURIComponent(moduleId)}`, { method: 'POST' });
+  },
+
+  async getAssessmentSourceDocuments(assessmentId: string, moduleId: string) {
+    return this.request<{ documents: AssessmentSourceDocument[] }>(`/api/assessments/${encodeURIComponent(assessmentId)}/modules/${encodeURIComponent(moduleId)}/source-documents`);
+  },
+
+  async getAssessmentSourceDocument(assessmentId: string, moduleId: string, documentId: string) {
+    return this.request<{ document: AssessmentSourceDocument }>(`/api/assessments/${encodeURIComponent(assessmentId)}/modules/${encodeURIComponent(moduleId)}/source-documents/${encodeURIComponent(documentId)}`);
+  },
+
+  async uploadAssessmentSourceDocument(assessmentId: string, moduleId: string, file: File, mimeType: string) {
+    return this.request<{ document: AssessmentSourceDocument }>(`/api/assessments/${encodeURIComponent(assessmentId)}/modules/${encodeURIComponent(moduleId)}/source-documents`, {
+      method: 'POST', body: file,
+      headers: { 'Content-Type': 'application/octet-stream', 'x-file-name': file.name, 'x-file-mime': mimeType },
+    });
+  },
+
+  async retryAssessmentSourceExtraction(assessmentId: string, moduleId: string, documentId: string) {
+    return this.request<{ document: AssessmentSourceDocument }>(`/api/assessments/${encodeURIComponent(assessmentId)}/modules/${encodeURIComponent(moduleId)}/source-documents/${encodeURIComponent(documentId)}/retry-extraction`, { method: 'POST' });
+  },
+
+  async deleteAssessmentSourceDocument(assessmentId: string, moduleId: string, documentId: string) {
+    return this.request<{ message: string }>(`/api/assessments/${encodeURIComponent(assessmentId)}/modules/${encodeURIComponent(moduleId)}/source-documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
+  },
+
+  async generateAssessmentQuestions(assessmentId: string, moduleId: string, payload: AssessmentGenerationPayload) {
+    return this.request<{ generation: { jobId: string; status: string }; questions: any[] }>(`/api/assessments/${encodeURIComponent(assessmentId)}/modules/${encodeURIComponent(moduleId)}/generate-questions`, { method: 'POST', body: JSON.stringify(payload) });
+  },
+
   async createAssessment(payload: {
     title: string;
     description?: string;
@@ -297,6 +573,7 @@ export const apiClient = {
     allowedAttempts?: number;
     assignedStudentIds?: string[];
     assignedCohortId?: string | null;
+    originModuleId?: string | null;
   }) {
     return this.request<{ message: string; assessment: any }>('/api/assessments', {
       method: 'POST',
@@ -306,6 +583,22 @@ export const apiClient = {
 
   async getAssessment(id: string) {
     return this.request<{ assessment: any }>(`/api/assessments/${id}`);
+  },
+
+  async getAssessmentReviewQuestions(id: string) {
+    return this.request<{questions:any[];assessment:any;module:any}>(`/api/assessments/${id}/review/questions`);
+  },
+  async approveAssessmentQuestion(assessmentId:string,questionId:string) {
+    return this.request<{message:string}>(`/api/assessments/${assessmentId}/questions/${questionId}/approve`,{method:'POST'});
+  },
+  async rejectAssessmentQuestion(assessmentId:string,questionId:string,reason?:string) {
+    return this.request<{message:string}>(`/api/assessments/${assessmentId}/questions/${questionId}/reject`,{method:'POST',body:JSON.stringify({reason})});
+  },
+  async getAssessmentQuestionHistory(assessmentId:string,questionId:string) {
+    return this.request<{history:any[]}>(`/api/assessments/${assessmentId}/questions/${questionId}/history`);
+  },
+  async regenerateAssessmentQuestion(assessmentId:string,questionId:string,idempotencyKey:string) {
+    return this.request<{message:string;question:any}>(`/api/assessments/${assessmentId}/questions/${questionId}/regenerate`,{method:'POST',body:JSON.stringify({idempotencyKey})});
   },
 
   async updateAssessment(id: string, payload: any) {
@@ -327,8 +620,16 @@ export const apiClient = {
     });
   },
 
+  async getAssessmentReadiness(id: string) {
+    return this.request<{ ready: boolean; totalMarks: number; issues: Array<{ code: string; message: string; questionOrder?: number }> }>(`/api/assessments/${id}/readiness`);
+  },
+
+  async archiveAssessment(id: string) {
+    return this.request<{ message: string; assessment: any }>(`/api/assessments/${id}/archive`, { method: 'POST' });
+  },
+
   async addAssessmentQuestion(assessmentId: string, payload: {
-    questionType: 'mcq' | 'descriptive';
+    questionType: 'mcq' | 'multiple_select' | 'true_false' | 'descriptive';
     questionText: string;
     marks: number;
     options?: Array<{ optionText: string; isCorrect: boolean }>;
@@ -440,7 +741,7 @@ export const apiClient = {
 
   async saveAssessmentAnswer(
     attemptId: string,
-    payload: { questionId: string; selectedOptionId?: string; descriptiveAnswer?: string }
+    payload: { questionId: string; selectedOptionId?: string; selectedOptionIds?: string[]; descriptiveAnswer?: string }
   ) {
     return this.request<{ message: string; answer: any }>(
       `/api/assessments/attempts/${attemptId}/answers`,

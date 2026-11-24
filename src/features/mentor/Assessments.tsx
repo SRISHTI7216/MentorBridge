@@ -1,12 +1,17 @@
 import React, { useState, useEffect } from 'react';
+import type { MentorLearningModule } from '../../services/apiClient';
+import { AssessmentQuestionGenerationPanel } from './AssessmentQuestionGenerationPanel';
 import { apiClient } from '../../services/apiClient';
-import { Assessment, MentorAssessmentStats, SubmissionReviewItem, AssessmentQuestion } from '../../types/assessment';
+import { Assessment, MentorAssessmentStats, SubmissionReviewItem, AssessmentQuestion, QuestionType } from '../../types/assessment';
 import { Card } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 
 export const MentorAssessments: React.FC = () => {
   const [assessments, setAssessments] = useState<Assessment[]>([]);
+  const [mentorModules, setMentorModules] = useState<MentorLearningModule[]>([]);
+  const [modulesLoading, setModulesLoading] = useState(false);
+  const [modulesError, setModulesError] = useState('');
   const [stats, setStats] = useState<MentorAssessmentStats>({
     totalCreated: 0,
     published: 0,
@@ -18,6 +23,40 @@ export const MentorAssessments: React.FC = () => {
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterSubject, setFilterSubject] = useState<string>('all');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [report, setReport] = useState<any>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState('');
+  const [readinessView, setReadinessView] = useState<{ assessmentId: string; loading: boolean; error?: string; report?: any } | null>(null);
+  const checkAssessmentReadiness = async (assessmentId: string) => {
+    setReadinessView({ assessmentId, loading: true });
+    try { const result = await apiClient.getAssessmentReadiness(assessmentId); if (result.error) throw new Error(result.error); setReadinessView({ assessmentId, loading: false, report: result.data }); }
+    catch (error:any) { setReadinessView({ assessmentId, loading: false, error: error?.message || 'Unable to check readiness.' }); }
+  };
+  const archiveAssessment = async (assessmentId: string) => {
+    if (!confirm('Archive this assessment? New attempts will stop. Existing attempts, evaluations, and released results remain available in history.')) return;
+    try { const result=await apiClient.archiveAssessment(assessmentId); if(result.error) throw new Error(result.error); await loadData(); }
+    catch(error:any) { alert(error?.message || 'Unable to archive assessment.'); }
+  };
+  const openReport = async (assessmentId: string) => {
+    setReport(null); setReportError(''); setReportLoading(true);
+    try { const result = await apiClient.getMentorAssessmentReport(assessmentId); if (result.error) throw new Error(result.error); setReport(result.data?.report || null); }
+    catch (err: any) { setReportError(err?.message || 'Unable to load assessment report.'); }
+    finally { setReportLoading(false); }
+  };
+  const [questionReviewId,setQuestionReviewId]=useState<string|null>(null);
+  const [reviewQuestions,setReviewQuestions]=useState<any[]>([]);
+  const [reviewModule,setReviewModule]=useState<any>(null);
+  const [reviewBusy,setReviewBusy]=useState(false);
+  const [reviewError,setReviewError]=useState('');
+  const [reviewSuccess,setReviewSuccess]=useState('');
+  const [questionHistory,setQuestionHistory]=useState<any[]|null>(null);
+  const [editingReviewQuestion,setEditingReviewQuestion]=useState<any|null>(null);
+  const refreshQuestionReview=async(id:string)=>{setReviewBusy(true);setReviewError('');try{const r=await apiClient.getAssessmentReviewQuestions(id);if(r.error)throw new Error(r.error);setReviewQuestions(r.data?.questions||[]);setReviewModule(r.data?.module||null);}catch(e:any){setReviewError(e?.message||'Unable to load questions.');setReviewQuestions([]);setReviewModule(null);}finally{setReviewBusy(false);}};
+  const openQuestionReview=async(id:string)=>{setQuestionReviewId(id);setReviewSuccess('');await refreshQuestionReview(id);};
+  const questionReviewAction=async(qid:string,action:'approve'|'reject')=>{if(!questionReviewId)return;setReviewBusy(true);setReviewError('');setReviewSuccess('');try{const r=action==='approve'?await apiClient.approveAssessmentQuestion(questionReviewId,qid):await apiClient.rejectAssessmentQuestion(questionReviewId,qid);if(r.error)throw new Error(r.error);setReviewSuccess(r.data?.message||'Action complete.');await refreshQuestionReview(questionReviewId);await loadData();}catch(e:any){setReviewError(e?.message||'Action failed.');}finally{setReviewBusy(false);}};
+  const showQuestionHistory=async(qid:string)=>{if(!questionReviewId)return;try{const r=await apiClient.getAssessmentQuestionHistory(questionReviewId,qid);if(r.error)throw new Error(r.error);setQuestionHistory(r.data?.history||[]);}catch(e:any){setReviewError(e?.message||'Unable to load question history.');}};
+  const saveReviewedQuestion=async()=>{if(!questionReviewId||!editingReviewQuestion)return;setReviewBusy(true);setReviewError('');try{const r=await apiClient.updateAssessmentQuestion(questionReviewId,editingReviewQuestion.id,{questionType:editingReviewQuestion.questionType,questionText:editingReviewQuestion.questionText,marks:Number(editingReviewQuestion.marks),explanation:editingReviewQuestion.explanation,evaluationGuidance:editingReviewQuestion.evaluationGuidance,difficulty:editingReviewQuestion.difficulty,cognitiveLevel:editingReviewQuestion.cognitiveLevel,topic:editingReviewQuestion.topic,options:editingReviewQuestion.questionType==='descriptive'?[]:editingReviewQuestion.options});if(r.error)throw new Error(r.error);setEditingReviewQuestion(null);setReviewSuccess('Question saved. AI approval is cleared after substantive edits.');await refreshQuestionReview(questionReviewId);}catch(e:any){setReviewError(e?.message||'Unable to save question.');}finally{setReviewBusy(false);}};
+  const regenerateReviewedQuestion=async(qid:string)=>{if(!questionReviewId)return;setReviewBusy(true);setReviewError('');try{const key=globalThis.crypto?.randomUUID?.();if(!key)throw new Error('Secure idempotency keys are unavailable in this browser.');const r=await apiClient.regenerateAssessmentQuestion(questionReviewId,qid,key);if(r.error)throw new Error(r.error);setReviewSuccess(r.data?.message||'Question regenerated and pending approval.');await refreshQuestionReview(questionReviewId);}catch(e:any){setReviewError(e?.message||'Regeneration failed; the existing question remains unchanged.');}finally{setReviewBusy(false);}};
 
   // Create / Edit Wizard State
   const [isEditorOpen, setIsEditorOpen] = useState<boolean>(false);
@@ -35,11 +74,14 @@ export const MentorAssessments: React.FC = () => {
   const [formAllowedAttempts, setFormAllowedAttempts] = useState(1);
   const [formPassingMarks, setFormPassingMarks] = useState(10);
   const [formQuestions, setFormQuestions] = useState<AssessmentQuestion[]>([]);
+  const [formModuleId, setFormModuleId] = useState('');
+  const [generationTarget, setGenerationTarget] = useState<{ assessmentId: string; moduleId: string } | null>(null);
+  const [generationLaunchError, setGenerationLaunchError] = useState('');
 
   // Question Builder State
   const [isQuestionModalOpen, setIsQuestionModalOpen] = useState(false);
   const [editingQuestionIndex, setEditingQuestionIndex] = useState<number | null>(null);
-  const [qType, setQType] = useState<'mcq' | 'descriptive'>('mcq');
+  const [qType, setQType] = useState<QuestionType>('mcq');
   const [qText, setQText] = useState('');
   const [qMarks, setQMarks] = useState(5);
   const [qExplanation, setQExplanation] = useState('');
@@ -100,6 +142,17 @@ export const MentorAssessments: React.FC = () => {
     loadData();
   }, []);
 
+  useEffect(() => {
+    let active = true; setModulesLoading(true);
+    apiClient.getMentorLearningModules().then(result => {
+      if (!active) return;
+      if (result.error || !result.data) { setModulesError(result.error || 'Draft modules could not be loaded.'); setMentorModules([]); }
+      else { setMentorModules(result.data.modules || []); setModulesError(''); }
+    }).catch((error:any) => { if (active) setModulesError(error?.message || 'Draft modules could not be loaded.'); })
+      .finally(() => { if (active) setModulesLoading(false); });
+    return () => { active = false; };
+  }, []);
+
   // Filter assessments
   const filteredAssessments = assessments.filter((a) => {
     const matchesStatus = filterStatus === 'all' || a.status === filterStatus;
@@ -116,6 +169,8 @@ export const MentorAssessments: React.FC = () => {
       `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
     setEditingAssessment(null);
+    setFormModuleId('');
+    setGenerationLaunchError('');
     setFormTitle('');
     setFormDescription('');
     setFormSubject('DSA');
@@ -131,6 +186,8 @@ export const MentorAssessments: React.FC = () => {
 
   const openEditModal = async (a: Assessment) => {
     setEditingAssessment(a);
+    setFormModuleId(a.modules?.[0]?.id || a.originModuleId || '');
+    setGenerationLaunchError('');
     setFormTitle(a.title);
     setFormDescription(a.description || '');
     setFormSubject(a.subject);
@@ -155,6 +212,62 @@ export const MentorAssessments: React.FC = () => {
     setIsEditorOpen(true);
   };
 
+  const linkSelectedModule = async () => {
+    if (!editingAssessment || !formModuleId) return;
+    const module = mentorModules.find(item => item.id === formModuleId);
+    if (!module || module.status !== 'draft') { setGenerationLaunchError('Select an eligible draft module owned by this mentor.'); return; }
+    setIsSubmitting(true); setGenerationLaunchError('');
+    try {
+      const result = await apiClient.linkAssessmentToModule(editingAssessment.id, formModuleId);
+      if (result.error) throw new Error(result.error);
+      setEditingAssessment(current => current ? { ...current, modules: [{ id: module.id, code: module.code, title: module.title, version: module.version, status: module.status }] } : current);
+      await loadData();
+    } catch (error:any) { setGenerationLaunchError(error?.message || 'Assessment could not be linked to the selected module.'); }
+    finally { setIsSubmitting(false); }
+  };
+
+  const prepareAiGeneration = async () => {
+    if (isSubmitting) return;
+    const module = mentorModules.find(item => item.id === formModuleId && item.status === 'draft');
+    if (!module) { setGenerationLaunchError('Choose an eligible draft module before generating questions.'); return; }
+    setIsSubmitting(true); setGenerationLaunchError('');
+    try {
+      const total = formQuestions.reduce((sum, question) => sum + Number(question.marks || 0), 0);
+      const payload = { title: formTitle.trim(), description: formDescription.trim(), subject: formSubject, topic: formTopic.trim(),
+        durationMinutes: Number(formDuration) || 45, totalMarks: total, passingMarks: Number(formPassingMarks) || 0,
+        startTime: new Date(formStartTime).toISOString(), endTime: new Date(formEndTime).toISOString(),
+        allowedAttempts: Number(formAllowedAttempts) || 1, originModuleId: module.id };
+      let assessmentId = editingAssessment?.id;
+      if (editingAssessment) {
+        const { originModuleId: _originModuleId, totalMarks: _totalMarks, ...metadataPayload } = payload;
+        const saved = await apiClient.updateAssessment(editingAssessment.id, metadataPayload);
+        if (saved.error) throw new Error(saved.error);
+      } else {
+        const created = await apiClient.createAssessment(payload);
+        if (created.error || !created.data?.assessment) throw new Error(created.error || 'Assessment draft could not be saved.');
+        const newAssessmentId: string = created.data.assessment.id;
+        assessmentId = newAssessmentId;
+        for (const question of formQuestions) {
+          const added = await apiClient.addAssessmentQuestion(newAssessmentId, { questionType: question.questionType, questionText: question.questionText, marks: question.marks,
+            options: question.options?.map(option => ({ optionText: option.optionText, isCorrect: Boolean(option.isCorrect) })),
+            evaluationGuidance: question.evaluationGuidance, explanation: question.explanation });
+          if (added.error) throw new Error(added.error);
+        }
+      }
+      if (!assessmentId) throw new Error('Assessment draft is unavailable.');
+      const linked = await apiClient.linkAssessmentToModule(assessmentId, module.id);
+      if (linked.error) throw new Error(linked.error);
+      const detail = await apiClient.getAssessment(assessmentId);
+      if (detail.error || !detail.data?.assessment) throw new Error(detail.error || 'Saved assessment could not be reloaded.');
+      setEditingAssessment({ ...detail.data.assessment, modules: [{ id: module.id, code: module.code, title: module.title, version: module.version, status: module.status }] });
+      setFormQuestions(detail.data.assessment.questions || []);
+      await loadData();
+      setIsEditorOpen(false);
+      setGenerationTarget({ assessmentId, moduleId: module.id });
+    } catch (error:any) { setGenerationLaunchError(error?.message || 'Assessment could not be prepared for AI generation.'); }
+    finally { setIsSubmitting(false); }
+  };
+
   const handleSaveAssessment = async (publishImmediate = false) => {
     if (!formTitle.trim() || !formTopic.trim()) {
       alert('Please provide Assessment Title and Topic.');
@@ -165,6 +278,7 @@ export const MentorAssessments: React.FC = () => {
       alert('Cannot publish assessment: You must add at least one question.');
       return;
     }
+    if (publishImmediate && !confirm('Publish this assessment after server-side readiness validation? Students can start attempts according to the availability window.')) return;
 
     setIsSubmitting(true);
     try {
@@ -186,12 +300,13 @@ export const MentorAssessments: React.FC = () => {
       let assessmentId = editingAssessment?.id;
 
       if (editingAssessment) {
-        await apiClient.updateAssessment(editingAssessment.id, payload);
+        const { totalMarks: _totalMarks, ...metadataPayload } = payload;
+        const updateRes = await apiClient.updateAssessment(editingAssessment.id, metadataPayload);
+        if (updateRes.error) throw new Error(updateRes.error);
       } else {
-        const createRes = await apiClient.createAssessment(payload);
-        if (createRes.data?.assessment) {
-          assessmentId = createRes.data.assessment.id;
-        }
+        const createRes = await apiClient.createAssessment({ ...payload, originModuleId: formModuleId || null });
+        if (createRes.error) throw new Error(createRes.error);
+        if (createRes.data?.assessment) assessmentId = createRes.data.assessment.id;
       }
 
       if (assessmentId) {
@@ -213,7 +328,8 @@ export const MentorAssessments: React.FC = () => {
         }
 
         if (publishImmediate) {
-          await apiClient.publishAssessment(assessmentId);
+          const published = await apiClient.publishAssessment(assessmentId);
+          if (published.error) throw new Error(published.error);
         }
       }
 
@@ -275,15 +391,15 @@ export const MentorAssessments: React.FC = () => {
       return;
     }
 
-    if (qType === 'mcq') {
+    if (qType !== 'descriptive') {
       const validOptions = qOptions.filter((o) => o.optionText.trim().length > 0);
-      if (validOptions.length < 2) {
-        alert('Please provide at least 2 non-empty options for MCQ.');
+      if (validOptions.length < (qType === 'true_false' ? 2 : 2)) {
+        alert('Please provide at least 2 non-empty options.');
         return;
       }
       const correctCount = validOptions.filter((o) => o.isCorrect).length;
-      if (correctCount !== 1) {
-        alert('Please designate exactly one option as the correct answer.');
+      if ((qType === 'multiple_select' && correctCount < 1) || (qType !== 'multiple_select' && correctCount !== 1)) {
+        alert(qType === 'multiple_select' ? 'Please designate at least one correct answer.' : 'Please designate exactly one option as the correct answer.');
         return;
       }
     }
@@ -294,13 +410,13 @@ export const MentorAssessments: React.FC = () => {
       questionText: qText.trim(),
       marks: Number(qMarks) || 1,
       options:
-        qType === 'mcq'
+        qType !== 'descriptive'
           ? qOptions
               .filter((o) => o.optionText.trim().length > 0)
               .map((opt, i) => ({ ...opt, optionOrder: i + 1 }))
           : [],
       evaluationGuidance: qType === 'descriptive' ? qGuidance.trim() : undefined,
-      explanation: qType === 'mcq' ? qExplanation.trim() : undefined,
+      explanation: qType !== 'descriptive' ? qExplanation.trim() : undefined,
     };
 
     if (editingQuestionIndex !== null) {
@@ -452,6 +568,8 @@ export const MentorAssessments: React.FC = () => {
 
   return (
     <div className="p-6 max-w-7xl w-full mx-auto space-y-6">
+      {questionReviewId&&<div className="fixed inset-0 z-[70] bg-slate-950/60 p-4 flex items-center justify-center"><Card className="w-full max-w-4xl max-h-[90vh] overflow-auto p-6 space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-xl font-bold">Question review</h2>{reviewModule?<p className="text-xs text-slate-500">Module: {reviewModule.code} / {reviewModule.title}{reviewModule.weekNumber&&<> / Week {reviewModule.weekNumber}</>}</p>:<p className="text-xs text-rose-700">No linked draft module is available for review.</p>}<p className="text-xs text-amber-700">Pending AI review: {reviewQuestions.filter((q:any)=>q.origin==='ai_generated'&&!q.approval.approved).length}</p></div><div className="flex gap-2"><Button size="sm" variant="outline" onClick={()=>{const item=assessments.find(assessment=>assessment.id===questionReviewId);if(item){setQuestionReviewId(null);void openEditModal(item);}}}>Generation &amp; editing</Button><Button size="sm" variant="outline" onClick={()=>{setQuestionReviewId(null);setQuestionHistory(null);setEditingReviewQuestion(null);}}>Close</Button></div></div>{reviewError&&<div role="alert" className="text-sm text-red-700">{reviewError}{reviewError.toLowerCase().includes('linked to a learning module')&&<Button size="sm" variant="outline" onClick={()=>{const item=assessments.find(assessment=>assessment.id===questionReviewId);if(item){setQuestionReviewId(null);void openEditModal(item);}}}>Open editor to link a module</Button>}</div>}{reviewSuccess&&<p role="status" className="text-sm text-emerald-700">{reviewSuccess}</p>}{reviewQuestions.some((q:any)=>q.origin==='ai_generated'&&!q.approval.approved)&&<p role="status" className="rounded bg-amber-50 p-3 text-sm text-amber-900">Publishing is blocked until every active AI-generated question is approved.</p>}{reviewBusy&&<p>Loading…</p>}{!reviewBusy&&!reviewQuestions.length&&<p>No active questions in this draft.</p>}{reviewQuestions.map((q:any)=><article key={q.id} className="rounded-xl border p-4 space-y-2"><div className="flex flex-wrap gap-2 items-center"><Badge variant={q.origin==='ai_generated'?'warning':'neutral'}>{q.origin==='ai_generated'?'AI generated':'Manual'}</Badge>{q.mentorEdited&&<Badge variant="neutral">Mentor edited</Badge>}<span className="text-xs">{q.questionType} · {q.marks} marks</span>{q.origin==='ai_generated'&&<Badge variant={q.approval.approved?'success':'warning'}>{q.approval.approved?'Approved':'Pending approval'}</Badge>}</div><p className="font-medium">{q.questionText}</p>{q.options?.map((o:any)=><p key={o.id} className="text-sm">{o.optionOrder}. {o.optionText}{o.isCorrect?' ✓ Correct':''}</p>)}{q.explanation&&<p className="text-sm text-slate-600">Explanation: {q.explanation}</p>}{q.generation&&<p className="text-xs text-slate-600">{q.generation.difficulty||'Difficulty unavailable'} · {q.generation.cognitiveLevel||'Cognitive level unavailable'} · {q.generation.topic||'Topic unavailable'}</p>}{q.sources?.map((s:any,i:number)=><p className="text-xs text-slate-500" key={i}>{s.filename} · {s.kind} {s.start}{s.end!==s.start?`–${s.end}`:''}</p>)}<div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={()=>setEditingReviewQuestion({...q,difficulty:q.generation?.difficulty,cognitiveLevel:q.generation?.cognitiveLevel,topic:q.generation?.topic,options:(q.options||[]).map((o:any)=>({...o}))})}>Edit</Button>{q.origin==='ai_generated'&&<><Button size="sm" disabled={reviewBusy||q.approval.approved} onClick={()=>questionReviewAction(q.id,'approve')}>Approve</Button><Button size="sm" variant="secondary" disabled={reviewBusy} onClick={()=>questionReviewAction(q.id,'reject')}>Reject</Button><Button size="sm" variant="outline" disabled={reviewBusy} onClick={()=>regenerateReviewedQuestion(q.id)}>Regenerate</Button></>}<Button size="sm" variant="outline" onClick={()=>showQuestionHistory(q.id)}>History</Button></div>{questionHistory&&<pre className="max-h-48 overflow-auto rounded bg-slate-50 p-3 text-xs">{JSON.stringify(questionHistory,null,2)}</pre>}</article>)}</Card></div>}
+      {editingReviewQuestion&&<div className="fixed inset-0 z-[80] bg-slate-950/60 p-4 flex items-center justify-center"><Card className="w-full max-w-2xl max-h-[85vh] overflow-auto p-5 space-y-3"><h3 className="font-bold">Edit question</h3><label className="block text-sm">Text<textarea className="mt-1 w-full rounded border p-2" value={editingReviewQuestion.questionText} onChange={e=>setEditingReviewQuestion({...editingReviewQuestion,questionText:e.target.value})}/></label><label className="block text-sm">Type<select className="mt-1 w-full rounded border p-2" value={editingReviewQuestion.questionType} onChange={e=>setEditingReviewQuestion({...editingReviewQuestion,questionType:e.target.value})}><option value="mcq">MCQ</option><option value="multiple_select">Multiple select</option><option value="true_false">True / False</option><option value="descriptive">Descriptive</option></select></label><label className="block text-sm">Marks<input type="number" min="0.01" step="0.01" className="mt-1 w-full rounded border p-2" value={editingReviewQuestion.marks} onChange={e=>setEditingReviewQuestion({...editingReviewQuestion,marks:Number(e.target.value)})}/></label><label className="block text-sm">Explanation<textarea className="mt-1 w-full rounded border p-2" value={editingReviewQuestion.explanation||''} onChange={e=>setEditingReviewQuestion({...editingReviewQuestion,explanation:e.target.value})}/></label>{editingReviewQuestion.questionType!=='descriptive'&&(editingReviewQuestion.options||[]).map((o:any,i:number)=><div key={i} className="flex gap-2 items-center"><input aria-label="Option text" className="flex-1 rounded border p-2" value={o.optionText} onChange={e=>{const options=[...editingReviewQuestion.options];options[i]={...o,optionText:e.target.value,optionOrder:i+1};setEditingReviewQuestion({...editingReviewQuestion,options});}}/><input aria-label="Correct answer" type="checkbox" checked={!!o.isCorrect} onChange={e=>{const options=[...editingReviewQuestion.options];options[i]={...o,isCorrect:e.target.checked,optionOrder:i+1};setEditingReviewQuestion({...editingReviewQuestion,options});}}/><Button size="sm" variant="outline" onClick={()=>setEditingReviewQuestion({...editingReviewQuestion,options:editingReviewQuestion.options.filter((_:any,j:number)=>i!==j).map((x:any,j:number)=>({...x,optionOrder:j+1}))})}>Remove</Button></div>)}{editingReviewQuestion.questionType!=='descriptive'&&<Button size="sm" variant="outline" onClick={()=>setEditingReviewQuestion({...editingReviewQuestion,options:[...editingReviewQuestion.options,{optionText:'',isCorrect:false,optionOrder:editingReviewQuestion.options.length+1}]})}>Add option</Button>}<label className="block text-sm">Difficulty<select className="mt-1 w-full rounded border p-2" value={editingReviewQuestion.difficulty||''} onChange={e=>setEditingReviewQuestion({...editingReviewQuestion,difficulty:e.target.value||null})}><option value="">Not set</option><option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option></select></label><label className="block text-sm">Cognitive level<select className="mt-1 w-full rounded border p-2" value={editingReviewQuestion.cognitiveLevel||''} onChange={e=>setEditingReviewQuestion({...editingReviewQuestion,cognitiveLevel:e.target.value||null})}><option value="">Not set</option>{['remember','understand','apply','analyze','evaluate','create'].map(level=><option key={level} value={level}>{level}</option>)}</select></label><label className="block text-sm">Topic<input className="mt-1 w-full rounded border p-2" value={editingReviewQuestion.topic||''} onChange={e=>setEditingReviewQuestion({...editingReviewQuestion,topic:e.target.value})}/></label><label className="block text-sm">Evaluation guidance<textarea className="mt-1 w-full rounded border p-2" value={editingReviewQuestion.evaluationGuidance||''} onChange={e=>setEditingReviewQuestion({...editingReviewQuestion,evaluationGuidance:e.target.value})}/></label><div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={()=>setEditingReviewQuestion(null)}>Cancel</Button><Button size="sm" disabled={reviewBusy} onClick={saveReviewedQuestion}>Save changes</Button></div></Card></div>}
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-outline-variant gap-4">
         <div>
@@ -511,7 +629,7 @@ export const MentorAssessments: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-3 text-xs bg-surface-container-low p-2 rounded-xl border border-outline-variant">
         <div className="flex items-center gap-1.5">
           <span className="text-slate-400 font-medium px-2">Status:</span>
-          {['all', 'published', 'draft', 'completed'].map((status) => (
+          {['all', 'published', 'draft', 'completed', 'archived'].map((status) => (
             <button
               key={status}
               onClick={() => setFilterStatus(status)}
@@ -564,20 +682,8 @@ export const MentorAssessments: React.FC = () => {
             <Card key={a.id} className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:shadow-md transition-shadow">
               <div className="space-y-2 flex-1">
                 <div className="flex items-center gap-2">
-                  <Badge
-                    variant={
-                      a.status === 'published'
-                        ? 'warning'
-                        : a.status === 'completed'
-                        ? 'success'
-                        : 'neutral'
-                    }
-                  >
-                    {a.status === 'published'
-                      ? 'Published • Active'
-                      : a.status === 'completed'
-                      ? 'Results Published'
-                      : 'Draft'}
+                  <Badge variant={a.status === 'published' ? 'warning' : a.status === 'completed' ? 'success' : 'neutral'}>
+                    {a.status === 'published' ? (Date.now() < Date.parse(a.startTime) ? 'Scheduled' : Date.now() <= Date.parse(a.endTime) ? 'Available' : 'Closed') : a.status === 'completed' ? 'Results Published' : a.status === 'archived' ? 'Archived' : 'Draft'}
                   </Badge>
                   <span className="text-xs font-mono font-semibold text-primary">{a.subject}</span>
                   <span className="text-slate-300">•</span>
@@ -586,6 +692,7 @@ export const MentorAssessments: React.FC = () => {
 
                 <h2 className="text-base font-bold text-slate-900">{a.title}</h2>
                 <p className="text-xs text-slate-600 line-clamp-1">{a.description}</p>
+                <p className="text-xs text-slate-500">Module: {a.modules?.length ? a.modules.map((module:any)=>module.code+' - '+module.title).join(', ') : 'Not linked'} | Topic: {a.topic}</p>
 
                 <div className="flex flex-wrap gap-3 text-[11px] text-slate-500 pt-1 font-mono">
                   <span>Questions: {a.questionsCount || 0}</span>
@@ -617,12 +724,13 @@ export const MentorAssessments: React.FC = () => {
                 )}
 
                 <div className="flex flex-col sm:flex-row gap-2">
-                  <Button size="sm" variant="outline" onClick={() => openEditModal(a)}>
-                    Edit & Questions
-                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => openReport(a.id)}>Analytics report</Button>
+                  {a.status==='draft'&&<Button size="sm" variant="secondary" onClick={()=>openQuestionReview(a.id)}>Question Review</Button>}
+                  {a.status==='draft'&&<><Button size="sm" variant="outline" onClick={() => checkAssessmentReadiness(a.id)}>Check readiness</Button><Button size="sm" variant="outline" onClick={() => openEditModal(a)}>Edit & Questions</Button></>}
                   <Button size="sm" variant="primary" onClick={() => openReviewQueue(a)}>
                     Review Queue ({a.submissionsCount || 0})
                   </Button>
+                  {['published','completed'].includes(a.status)&&<Button size="sm" variant="outline" onClick={()=>archiveAssessment(a.id)}>Archive</Button>}
                 </div>
               </div>
             </Card>
@@ -630,6 +738,9 @@ export const MentorAssessments: React.FC = () => {
         </div>
       )}
 
+      {generationTarget&&<div className="fixed inset-0 z-[75] bg-slate-950/60 p-4 flex items-center justify-center overflow-y-auto"><Card className="my-4 w-full max-w-4xl max-h-[94vh] overflow-y-auto p-5 space-y-4"><div className="flex items-start justify-between gap-3"><div><h2 className="text-xl font-bold">Generate questions with AI</h2><p className="text-sm text-slate-500">Source-grounded draft questions for {mentorModules.find(module=>module.id===generationTarget.moduleId)?.title || 'the linked module'}.</p></div><Button size="sm" variant="outline" onClick={()=>{setGenerationTarget(null);setIsEditorOpen(true);}}>Back to assessment</Button></div><AssessmentQuestionGenerationPanel assessmentId={generationTarget.assessmentId} moduleId={generationTarget.moduleId} onGenerated={async()=>{const detail=await apiClient.getAssessment(generationTarget.assessmentId);if(detail.data?.assessment?.questions)setFormQuestions(detail.data.assessment.questions);await loadData();await refreshQuestionReview(generationTarget.assessmentId);}} onOpenReview={()=>{const id=generationTarget.assessmentId;setGenerationTarget(null);void openQuestionReview(id);}} /></Card></div>}
+      {readinessView&&<div className="fixed inset-0 z-[66] bg-slate-950/60 p-4 flex items-center justify-center"><Card className="w-full max-w-xl p-5 space-y-4"><div className="flex justify-between"><h2 className="text-lg font-bold">Publish readiness</h2><Button size="sm" variant="outline" onClick={()=>setReadinessView(null)}>Close</Button></div>{readinessView.loading&&<p role="status">Checking assessment settings and active questions...</p>}{readinessView.error&&<p role="alert" className="text-sm text-rose-700">{readinessView.error}</p>}{readinessView.report&&<><p className={readinessView.report.ready?'text-emerald-700':'text-amber-800'}>{readinessView.report.ready?'Ready to publish.':'Resolve these issues before publishing:'}</p>{readinessView.report.issues.length===0?<p className="text-sm text-slate-600">Active questions total {readinessView.report.totalMarks} marks.</p>:readinessView.report.issues.map((issue:any,index:number)=><p key={index} className="text-sm text-slate-700">{issue.questionOrder&&<>Question {issue.questionOrder}: </>}{issue.message}</p>)}</>}</Card></div>}
+      {(reportLoading || reportError || report) && <div className="fixed inset-0 z-[65] bg-slate-950/60 p-4 flex items-center justify-center"><Card className="w-full max-w-5xl max-h-[90vh] overflow-auto p-6 space-y-5"><div className="flex justify-between items-start gap-4"><div><h2 className="text-xl font-bold">Assessment report</h2>{report&&<p className="text-sm text-slate-500">{report.assessment.title} · {report.assessment.subject} · {report.modules.map((m:any)=>m.name||m.code).filter(Boolean).join(', ')||'Unlinked module'}</p>}</div><Button size="sm" variant="outline" onClick={()=>{setReport(null);setReportError('');}}>Close</Button></div>{reportLoading&&<p role="status">Loading report…</p>}{reportError&&<div role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{reportError}</div>}{report&&<><div className="grid grid-cols-2 md:grid-cols-4 gap-3">{[['Attempts',report.overview.totalAttempts],['Students',report.overview.uniqueStudents],['Completed',report.overview.completedAttempts],['In progress',report.overview.inProgressAttempts],['Average',report.overview.averagePercentage===null?'—':`${report.overview.averagePercentage}%`],['Highest',report.overview.highestPercentage===null?'—':`${report.overview.highestPercentage}%`],['Pass / fail',report.assessment.resultsReleased?`${report.overview.passCount} / ${report.overview.failCount}`:'Withheld'],['Completion',`${report.overview.completionRate}%`]].map(([label,value])=><div key={String(label)} className="rounded-xl border p-3"><p className="text-xs text-slate-500">{label}</p><p className="text-lg font-semibold">{value}</p></div>)}</div><p className="text-xs text-slate-600">Lowest score: {report.overview.lowestPercentage===null?'Unavailable':`${report.overview.lowestPercentage}%`} | Pass rate: {report.overview.passRate===null?'Unavailable':`${report.overview.passRate}%`} | Fail rate: {report.overview.failRate===null?'Unavailable':`${report.overview.failRate}%`}</p><section className="rounded-lg border p-3"><h3 className="font-semibold mb-2">Module performance</h3>{!report.modules.length?<p className="text-sm text-slate-500">This assessment is not linked to a module.</p>:report.modules.map((module:any)=><p key={module.id} className="text-sm text-slate-600">{module.name||module.code||'Learning module'} | {module.assessmentCount} assessments | average {module.averagePercentage===null?'|':`${module.averagePercentage}%`}</p>)}</section>{!report.assessment.resultsReleased&&<p role="status" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">Scores and question analysis are hidden until results are released.</p>}<section><h3 className="font-semibold mb-2">Students</h3>{!report.students.length?<p className="text-sm text-slate-500">No active assigned students have assessment activity.</p>:<div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="text-left border-b"><th className="py-2">Student</th><th>Attempts</th><th>Status</th><th>Result</th></tr></thead><tbody>{report.students.map((student:any)=><tr key={student.studentId} className="border-b"><td className="py-2">{student.name}</td><td>{student.attemptCount}</td><td>{student.submissionStatus.replace('_',' ')}</td><td>{student.percentage===undefined?'Withheld':`${student.percentage}% · ${student.passed?'Pass':'Fail'}`}</td></tr>)}</tbody></table></div>}</section><section><h3 className="font-semibold mb-2">Attempt history and module trends</h3>{report.students.map((student:any)=><details key={student.studentId} className="border-b py-2"><summary className="cursor-pointer text-sm font-medium">{student.name} - {student.history.length} attempts</summary><ul className="ml-5 list-disc text-sm text-slate-600">{student.history.map((attempt:any)=><li key={attempt.attemptNumber}>Attempt {attempt.attemptNumber}: {attempt.status}{attempt.percentage===undefined?'':` - ${attempt.percentage}%`}</li>)}</ul><p className="text-xs text-slate-500">Module trend: {student.moduleTrend.length?student.moduleTrend.map((point:any)=>`${point.title} ${point.percentage}%`).join(', '):'No released scores'}</p></details>)}</section>{report.assessment.resultsReleased&&<section><h3 className="font-semibold mb-2">Question analysis</h3>{!report.questions.length?<p className="text-sm text-slate-500">No submitted responses to analyze.</p>:<div className="space-y-2">{report.questions.map((q:any)=><div key={q.questionOrder} className="rounded border p-3 text-sm"><span className="font-medium">Question {q.questionOrder}</span>{!q.sufficientData?<span className="ml-2 text-slate-500">Insufficient data ({q.responseCount} responses; 5 required)</span>:<span className="ml-2 text-slate-600">{q.correctRate}% correct · {q.incorrectCount} incorrect · {q.difficulty||'difficulty untagged'} · {q.cognitiveLevel||'cognitive level untagged'} · {q.topic||'topic untagged'}</span>}</div>)}</div>}</section>}</>}</Card></div>}
       {/* ==================================================================== */}
       {/* 1. CREATE / EDIT ASSESSMENT WIZARD MODAL */}
       {/* ==================================================================== */}
@@ -749,6 +860,15 @@ export const MentorAssessments: React.FC = () => {
               </div>
             </div>
 
+            <section className="rounded-xl border border-outline-variant bg-surface-container-low p-4 space-y-2">
+              <div><h3 className="text-sm font-semibold">Learning module</h3><p className="text-xs text-slate-500">Choose a draft module owned by you. Module subject or topic text is never used to auto-link.</p></div>
+              {modulesLoading&&<p role="status" className="text-xs">Loading draft modules...</p>}{modulesError&&<p role="alert" className="text-xs text-rose-700">{modulesError}</p>}
+              <label className="block text-xs font-medium">Eligible draft module<select value={formModuleId} disabled={modulesLoading||isSubmitting||!!editingAssessment?.modules?.length} onChange={event=>setFormModuleId(event.target.value)} className="mt-1 w-full rounded border bg-white px-3 py-2"><option value="">No module selected</option>{mentorModules.filter(module=>module.status==='draft').map(module=><option key={module.id} value={module.id}>{module.code} / {module.title} / v{module.version}</option>)}</select></label>
+              {formModuleId&&<p className="text-xs text-slate-600">Assessment topic: {formTopic || 'Not set'}</p>}
+              {editingAssessment&&!editingAssessment.modules?.length&&formModuleId&&<Button size="sm" variant="outline" disabled={isSubmitting} onClick={()=>void linkSelectedModule()}>Link draft module</Button>}
+              {generationLaunchError&&<p role="alert" className="text-xs text-rose-700">{generationLaunchError}</p>}
+            </section>
+
             {/* Questions Section */}
             <div className="space-y-3 pt-3 border-t border-slate-100">
               <div className="flex items-center justify-between">
@@ -765,6 +885,7 @@ export const MentorAssessments: React.FC = () => {
                   <Button size="sm" variant="outline" onClick={() => setIsPreviewOpen(true)}>
                     Preview Exam
                   </Button>
+                  {formModuleId&&mentorModules.some(module=>module.id===formModuleId&&module.status==='draft')&&<Button size="sm" variant="primary" disabled={isSubmitting} onClick={()=>void prepareAiGeneration()}>Generate Questions with AI</Button>}
                   <Button size="sm" onClick={openAddQuestion}>
                     + Add Question
                   </Button>
@@ -893,6 +1014,8 @@ export const MentorAssessments: React.FC = () => {
                     className="w-full px-3 py-2 border rounded-xl outline-none focus:border-primary text-xs bg-white"
                   >
                     <option value="mcq">Multiple Choice Question (MCQ)</option>
+                    <option value="multiple_select">Multiple Select Question</option>
+                    <option value="true_false">True / False</option>
                     <option value="descriptive">Descriptive Question (Manual Evaluation)</option>
                   </select>
                 </div>
@@ -922,7 +1045,7 @@ export const MentorAssessments: React.FC = () => {
               </div>
 
               {/* MCQ Options */}
-              {qType === 'mcq' && (
+              {qType !== 'descriptive' && (
                 <div className="space-y-2 pt-2">
                   <div className="flex items-center justify-between">
                     <label className="font-semibold text-slate-800">
@@ -940,11 +1063,17 @@ export const MentorAssessments: React.FC = () => {
                   <div className="space-y-2">
                     {qOptions.map((opt, optIdx) => (
                       <div key={optIdx} className="flex items-center gap-2">
-                        <input
-                          type="radio"
+                      <input
+                          type={qType === 'multiple_select' ? 'checkbox' : 'radio'}
                           name="correctOption"
                           checked={opt.isCorrect}
                           onChange={() => {
+                            if (qType === 'multiple_select') {
+                              const updated = [...qOptions];
+                              updated[optIdx] = { ...updated[optIdx], isCorrect: !updated[optIdx].isCorrect };
+                              setQOptions(updated);
+                              return;
+                            }
                             const updated = qOptions.map((o, i) => ({
                               ...o,
                               isCorrect: i === optIdx,

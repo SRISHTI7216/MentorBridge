@@ -156,7 +156,7 @@ export const MentorDashboard: React.FC = () => {
                   <span>Sprint 8 of 14 • Mid-term Evaluation in 12 Days</span>
                 </div>
                 <h2 className="font-display text-2xl lg:text-3xl text-slate-900 font-bold tracking-tight">
-                  Good morning, Dr. Vance!
+                  Good morning, Dr. Rucha!
                 </h2>
                 <p className="text-slate-600 max-w-2xl text-xs sm:text-sm leading-relaxed">
                   Here is an overview of your <strong className="text-primary font-semibold">42 assigned mentees</strong>. Cohort assessment averages are trending up by +4.2%, with 5 students flagged for tailored algorithm guidance prior to ABET review week.
